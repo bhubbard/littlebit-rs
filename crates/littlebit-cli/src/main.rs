@@ -15,7 +15,8 @@ use littlebit_core::{
     LittleBitConfigOverrides, QuantFunc, TrainMode,
 };
 use littlebit_models::{
-    load_dense_model, GenerateConfig, LittleBitModel, LoadOptions, PushOptions,
+    load_dense_model, resolve_model_dir, stream_quantize_checkpoint, GenerateConfig,
+    LittleBitModel, LoadOptions, PushOptions, StreamingQuantizeOptions,
 };
 use littlebit_train::{
     evaluate_multiple_choice, evaluate_perplexity, load_eval_tokens, load_multiple_choice_jsonl,
@@ -174,6 +175,18 @@ enum Commands {
         /// Preserve F32 scale/head tensors instead of casting to BF16 on save.
         #[arg(long)]
         preserve_f32: bool,
+
+        /// Stream one transformer block at a time from safetensors to keep peak RAM minimal.
+        #[arg(long)]
+        streaming: bool,
+
+        /// Maximum output shard size in MiB when `--streaming` is enabled.
+        #[arg(long, default_value_t = 2048)]
+        max_shard_mb: usize,
+
+        /// Skip multimodal vision/audio tower weights when streaming multimodal checkpoints.
+        #[arg(long)]
+        text_only: bool,
 
         /// Print output summary as JSON.
         #[arg(long)]
@@ -507,34 +520,75 @@ fn main() -> Result<()> {
             save_dir,
             seed,
             preserve_f32,
+            streaming,
+            max_shard_mb,
+            text_only,
             json,
             quant,
         } => {
             let lb_cfg = quant.to_config_with_defaults()?;
-            let load_opts = make_load_options(
-                &cli.global,
-                device,
-                dtype,
-                InferenceMode::Unpacked,
-                LittleBitConfigOverrides::default(),
-            );
-            let (mut model, src_dir) = load_dense_model(model_id, &load_opts)?;
-            let summary = model.apply_littlebit_patch(&lb_cfg, TrainMode::Eval, *seed)?;
-
-            let wrapper =
-                LittleBitModel::new(model, lb_cfg, Some(model_id.clone()), Some(src_dir.clone()));
             let cast_policy = if *preserve_f32 {
                 CastPolicy::Preserve
             } else {
                 CastPolicy::ToBf16
             };
-            wrapper.save_pretrained(save_dir, Some(&src_dir), cast_policy)?;
+
+            let (summary, streaming_info) = if *streaming {
+                let src_dir = resolve_model_dir(
+                    model_id,
+                    cli.global.cache_dir.as_deref(),
+                    cli.global.token.as_deref(),
+                    cli.global.local_files_only,
+                )?;
+                let max_shard_bytes = (*max_shard_mb).max(1) * 1024 * 1024;
+                let report = stream_quantize_checkpoint(
+                    &src_dir,
+                    save_dir,
+                    &lb_cfg,
+                    &StreamingQuantizeOptions {
+                        seed: *seed,
+                        cast_policy,
+                        max_shard_bytes,
+                        device,
+                        dtype,
+                        text_only: *text_only,
+                        base_model_id: Some(model_id.clone()),
+                    },
+                )?;
+                (
+                    report.patch_summary,
+                    Some((report.shards_written, report.blocks_processed)),
+                )
+            } else {
+                let load_opts = make_load_options(
+                    &cli.global,
+                    device,
+                    dtype,
+                    InferenceMode::Unpacked,
+                    LittleBitConfigOverrides::default(),
+                );
+                let (mut model, src_dir) = load_dense_model(model_id, &load_opts)?;
+                let summary = model.apply_littlebit_patch(&lb_cfg, TrainMode::Eval, *seed)?;
+
+                let wrapper = LittleBitModel::new(
+                    model,
+                    lb_cfg,
+                    Some(model_id.clone()),
+                    Some(src_dir.clone()),
+                );
+                wrapper.save_pretrained(save_dir, Some(&src_dir), cast_policy)?;
+                (summary, None)
+            };
+
             let stats = inspect_checkpoint(save_dir)?;
             if *json {
                 println!("{}", serde_json::to_string_pretty(&stats)?);
             } else {
                 println!("Quantized `{model_id}` -> `{}`", save_dir.display());
                 println!("Patch summary: {summary}");
+                if let Some((shards, blocks)) = streaming_info {
+                    println!("Streaming: processed {blocks} blocks -> {shards} shard(s)");
+                }
                 println!(
                     "Packed bytes: {} | Quantized FP16 baseline: {} | Compression: {:.2}x | Avg eff_bit: {:.4}",
                     stats.quantized_layers_bytes,

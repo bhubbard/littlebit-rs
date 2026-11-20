@@ -164,6 +164,90 @@ pub fn load_dense_model(
     Ok((model, dir))
 }
 
+pub(crate) fn write_quantized_metadata(
+    save_dir: &Path,
+    model_config: &ModelConfig,
+    littlebit_config: &LittleBitConfig,
+    base_model_id: Option<&str>,
+    tokenizer_src: Option<&Path>,
+) -> Result<()> {
+    fs::create_dir_all(save_dir)?;
+
+    let lb_json = serde_json::to_string_pretty(littlebit_config)?;
+    fs::write(save_dir.join("littlebit_config.json"), lb_json)?;
+
+    if let Some(base_id) = base_model_id {
+        let meta = serde_json::to_string_pretty(&BaseModelMeta {
+            model_id: base_id.to_string(),
+        })?;
+        fs::write(save_dir.join("base_model.json"), meta)?;
+    }
+
+    let mut model_cfg_val = serde_json::to_value(model_config)?;
+    if let Some(obj) = model_cfg_val.as_object_mut() {
+        obj.insert(
+            "auto_map".to_string(),
+            serde_json::json!({ "AutoModelForCausalLM": "quantization.hub.LittleBitModel" }),
+        );
+        obj.insert(
+            "quant_func".to_string(),
+            serde_json::json!(littlebit_config.quant_func.as_wire_name()),
+        );
+        obj.insert(
+            "eff_bit".to_string(),
+            serde_json::json!(littlebit_config.eff_bit),
+        );
+        obj.insert(
+            "split_dim".to_string(),
+            serde_json::json!(littlebit_config.split_dim),
+        );
+        obj.insert(
+            "residual".to_string(),
+            serde_json::json!(littlebit_config.residual),
+        );
+        obj.insert(
+            "kv_factor".to_string(),
+            serde_json::json!(littlebit_config.kv_factor),
+        );
+        obj.insert(
+            "min_split_dim".to_string(),
+            serde_json::json!(littlebit_config.min_split_dim),
+        );
+        obj.insert(
+            "quant_mod".to_string(),
+            serde_json::json!(littlebit_config.quant_mod),
+        );
+        obj.insert(
+            "use_itq".to_string(),
+            serde_json::json!(littlebit_config.use_itq),
+        );
+        obj.insert(
+            "itq_n_iter".to_string(),
+            serde_json::json!(littlebit_config.itq_n_iter),
+        );
+        if let Some(ref layers) = littlebit_config.eff_bit_layers {
+            obj.insert("eff_bit_layers".to_string(), serde_json::json!(layers));
+        }
+    }
+    fs::write(
+        save_dir.join("config.json"),
+        serde_json::to_string_pretty(&model_cfg_val)?,
+    )?;
+
+    if let Some(tok_dir) = tokenizer_src {
+        for filename in TOKENIZER_ARTIFACT_FILES {
+            let src = tok_dir.join(filename);
+            if src.is_file() {
+                let dst = save_dir.join(filename);
+                if src != dst {
+                    fs::copy(&src, &dst)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl LittleBitModel {
     /// Wrap a quantized [`CausalLm`] alongside its [`LittleBitConfig`] and optional base model ID.
     #[must_use]
@@ -265,83 +349,15 @@ impl LittleBitModel {
         tokenizer_src: Option<&Path>,
         cast_policy: CastPolicy,
     ) -> Result<()> {
-        fs::create_dir_all(save_dir)?;
-
-        let lb_json = serde_json::to_string_pretty(&self.littlebit_config)?;
-        fs::write(save_dir.join("littlebit_config.json"), lb_json)?;
-
-        if let Some(base_id) = &self.base_model_id {
-            let meta = serde_json::to_string_pretty(&BaseModelMeta {
-                model_id: base_id.clone(),
-            })?;
-            fs::write(save_dir.join("base_model.json"), meta)?;
-        }
-
-        let mut model_cfg_val = serde_json::to_value(self.model.config())?;
-        if let Some(obj) = model_cfg_val.as_object_mut() {
-            obj.insert(
-                "auto_map".to_string(),
-                serde_json::json!({ "AutoModelForCausalLM": "quantization.hub.LittleBitModel" }),
-            );
-            obj.insert(
-                "quant_func".to_string(),
-                serde_json::json!(self.littlebit_config.quant_func.as_wire_name()),
-            );
-            obj.insert(
-                "eff_bit".to_string(),
-                serde_json::json!(self.littlebit_config.eff_bit),
-            );
-            obj.insert(
-                "split_dim".to_string(),
-                serde_json::json!(self.littlebit_config.split_dim),
-            );
-            obj.insert(
-                "residual".to_string(),
-                serde_json::json!(self.littlebit_config.residual),
-            );
-            obj.insert(
-                "kv_factor".to_string(),
-                serde_json::json!(self.littlebit_config.kv_factor),
-            );
-            obj.insert(
-                "min_split_dim".to_string(),
-                serde_json::json!(self.littlebit_config.min_split_dim),
-            );
-            obj.insert(
-                "quant_mod".to_string(),
-                serde_json::json!(self.littlebit_config.quant_mod),
-            );
-            obj.insert(
-                "use_itq".to_string(),
-                serde_json::json!(self.littlebit_config.use_itq),
-            );
-            obj.insert(
-                "itq_n_iter".to_string(),
-                serde_json::json!(self.littlebit_config.itq_n_iter),
-            );
-            if let Some(ref layers) = self.littlebit_config.eff_bit_layers {
-                obj.insert("eff_bit_layers".to_string(), serde_json::json!(layers));
-            }
-        }
-        fs::write(
-            save_dir.join("config.json"),
-            serde_json::to_string_pretty(&model_cfg_val)?,
+        write_quantized_metadata(
+            save_dir,
+            self.model.config(),
+            &self.littlebit_config,
+            self.base_model_id.as_deref(),
+            tokenizer_src.or(self.source_dir.as_deref()),
         )?;
-
         let state_dict = self.model.pack_state_dict()?;
         save_packed_safetensors(save_dir, &state_dict, cast_policy)?;
-
-        if let Some(tok_dir) = tokenizer_src.or(self.source_dir.as_deref()) {
-            for filename in TOKENIZER_ARTIFACT_FILES {
-                let src = tok_dir.join(filename);
-                if src.is_file() {
-                    let dst = save_dir.join(filename);
-                    if src != dst {
-                        fs::copy(&src, &dst)?;
-                    }
-                }
-            }
-        }
         Ok(())
     }
 

@@ -28,5 +28,6 @@ pub use packer::{
 pub use safetensors_io::{
     inspect_checkpoint, load_and_unpack_state_dict, load_raw_safetensors_dir,
     save_packed_safetensors, CheckpointFormat, CheckpointStats, LayerInspection, LoadedStateDict,
+    SafetensorsReader, ShardedSafetensorsWriter, TensorLocation,
 };
 pub use svd::{exact_thin_svd, rank_one_decompose, svd_lowrank, ThinSvd, DEFAULT_LOWRANK_NITER};

@@ -467,6 +467,42 @@ impl RmsNorm {
     }
 }
 
+/// Weightless RMSNorm used for Gemma 4 value normalization (`v_norm`) and router input norm.
+#[derive(Debug, Clone, Copy)]
+pub struct RmsNormNoScale {
+    /// Numerical stability epsilon.
+    pub eps: f32,
+}
+
+impl RmsNormNoScale {
+    /// Construct a weightless RMSNorm with epsilon `eps`.
+    #[must_use]
+    pub fn new(eps: f64) -> Self {
+        Self { eps: eps as f32 }
+    }
+
+    /// Normalize along the last dimension in F32 (`x * (mean(x^2) + eps)^-0.5`), casting back to `x.dtype()`.
+    ///
+    /// # Errors
+    /// Returns an error if tensor operations fail.
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let orig_dtype = x.dtype();
+        let x_f32 = if orig_dtype == DType::F32 {
+            x.clone()
+        } else {
+            x.to_dtype(DType::F32)?
+        };
+        let mean_sq = x_f32.sqr()?.mean_keepdim(D::Minus1)?;
+        let inv_rms = (mean_sq + f64::from(self.eps))?.powf(-0.5)?;
+        let out = x_f32.broadcast_mul(&inv_rms)?;
+        if orig_dtype == DType::F32 {
+            Ok(out)
+        } else {
+            Ok(out.to_dtype(orig_dtype)?)
+        }
+    }
+}
+
 /// Differentiable LayerNorm using `candle_nn::ops::layer_norm_slow` (for OPT).
 #[derive(Debug, Clone)]
 pub struct LayerNorm {
@@ -762,17 +798,31 @@ impl Embedding {
     }
 }
 
-/// Precomputed Rotary Position Embedding (`cos`, `sin`) supporting differentiable `rope_slow`.
+/// Rotary Position Embedding frequency parameterization mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RopeMode {
+    /// Standard RoPE denominator `2 * rope_angles` (equal to `head_dim` when `partial_rotary_factor == 1.0`).
+    Default,
+    /// Gemma 4 proportional RoPE (p-RoPE): always uses full `head_dim` as exponent denominator
+    /// even when `partial_rotary_factor < 1.0`, zero-padding non-rotated NOPE pairs.
+    Proportional,
+}
+
+/// Precomputed Rotary Position Embedding (`cos`, `sin`) supporting differentiable `rope_slow`
+/// as well as partial and proportional RoPE (`p-RoPE`).
 #[derive(Debug, Clone)]
 pub struct RotaryEmbedding {
     head_dim: usize,
     rope_theta: f64,
+    partial_rotary_factor: f64,
+    scale_factor: f64,
+    mode: RopeMode,
     cos: Tensor,
     sin: Tensor,
 }
 
 impl RotaryEmbedding {
-    /// Precompute `(max_seq, head_dim / 2)` cosine and sine tables.
+    /// Precompute `(max_seq, head_dim / 2)` cosine and sine tables using standard full-head RoPE.
     ///
     /// # Errors
     /// Returns an error if `head_dim` is odd or tensor creation fails.
@@ -783,15 +833,68 @@ impl RotaryEmbedding {
         dtype: DType,
         device: &Device,
     ) -> Result<Self> {
+        Self::new_with_config(
+            head_dim,
+            max_seq,
+            rope_theta,
+            1.0,
+            1.0,
+            RopeMode::Default,
+            dtype,
+            device,
+        )
+    }
+
+    /// Precompute `(max_seq, head_dim / 2)` cosine and sine tables with partial/proportional RoPE options.
+    ///
+    /// # Errors
+    /// Returns an error if `head_dim` is odd, `partial_rotary_factor` is outside `(0.0, 1.0]`,
+    /// `scale_factor <= 0.0`, or tensor creation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_config(
+        head_dim: usize,
+        max_seq: usize,
+        rope_theta: f64,
+        partial_rotary_factor: f64,
+        scale_factor: f64,
+        mode: RopeMode,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Self> {
         if !head_dim.is_multiple_of(2) {
             return Err(ModelError::InvalidArgument(format!(
                 "rotary embedding head_dim must be even, got {head_dim}"
             )));
         }
-        let (cos, sin) = compute_rope_tables(head_dim, max_seq, rope_theta, dtype, device)?;
+        if !partial_rotary_factor.is_finite()
+            || partial_rotary_factor <= 0.0
+            || partial_rotary_factor > 1.0
+        {
+            return Err(ModelError::InvalidArgument(format!(
+                "partial_rotary_factor must be in (0.0, 1.0], got {partial_rotary_factor}"
+            )));
+        }
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            return Err(ModelError::InvalidArgument(format!(
+                "rope scale_factor must be finite and positive, got {scale_factor}"
+            )));
+        }
+        let (cos, sin) = compute_rope_tables_with_config(
+            head_dim,
+            max_seq,
+            rope_theta,
+            partial_rotary_factor,
+            scale_factor,
+            mode,
+            dtype,
+            device,
+        )?;
         Ok(Self {
             head_dim,
             rope_theta,
+            partial_rotary_factor,
+            scale_factor,
+            mode,
             cos,
             sin,
         })
@@ -807,10 +910,13 @@ impl RotaryEmbedding {
         let (cos_full, sin_full) = if needed <= self.cos.dims()[0] {
             (self.cos.clone(), self.sin.clone())
         } else {
-            compute_rope_tables(
+            compute_rope_tables_with_config(
                 self.head_dim,
                 needed,
                 self.rope_theta,
+                self.partial_rotary_factor,
+                self.scale_factor,
+                self.mode,
                 x.dtype(),
                 x.device(),
             )?
@@ -825,17 +931,28 @@ impl RotaryEmbedding {
     }
 }
 
-fn compute_rope_tables(
+#[allow(clippy::too_many_arguments)]
+fn compute_rope_tables_with_config(
     head_dim: usize,
     max_seq: usize,
     rope_theta: f64,
+    partial_rotary_factor: f64,
+    scale_factor: f64,
+    mode: RopeMode,
     dtype: DType,
     device: &Device,
 ) -> Result<(Tensor, Tensor)> {
     let half_dim = head_dim / 2;
-    let inv_freq: Vec<f32> = (0..half_dim)
-        .map(|i| (1.0f64 / rope_theta.powf((2 * i) as f64 / head_dim as f64)) as f32)
-        .collect();
+    let rope_angles =
+        (((partial_rotary_factor * head_dim as f64) / 2.0).floor() as usize).min(half_dim);
+    let denom = match mode {
+        RopeMode::Proportional => head_dim as f64,
+        RopeMode::Default => (2 * rope_angles).max(2) as f64,
+    };
+    let mut inv_freq = vec![0.0f32; half_dim];
+    for (i, slot) in inv_freq.iter_mut().take(rope_angles).enumerate() {
+        *slot = (1.0f64 / rope_theta.powf((2 * i) as f64 / denom) / scale_factor) as f32;
+    }
     let inv_freq_t = Tensor::from_vec(inv_freq, (1, half_dim), device)?;
     let positions: Vec<f32> = (0..max_seq).map(|p| p as f32).collect();
     let pos_t = Tensor::from_vec(positions, (max_seq, 1), device)?;
@@ -849,6 +966,7 @@ fn compute_rope_tables(
 #[derive(Debug, Clone)]
 pub struct KvCache {
     layers: Vec<Option<(Tensor, Tensor)>>,
+    seen_tokens: Vec<usize>,
 }
 
 impl KvCache {
@@ -857,10 +975,11 @@ impl KvCache {
     pub fn new(num_layers: usize) -> Self {
         Self {
             layers: vec![None; num_layers],
+            seen_tokens: vec![0; num_layers],
         }
     }
 
-    /// Number of tokens currently cached at `layer_idx`.
+    /// Number of tokens currently retained in the cache window at `layer_idx`.
     #[must_use]
     pub fn past_len(&self, layer_idx: usize) -> usize {
         self.layers
@@ -868,6 +987,12 @@ impl KvCache {
             .and_then(|entry| entry.as_ref())
             .and_then(|(k, _)| k.dims().get(2).copied())
             .unwrap_or(0)
+    }
+
+    /// Total number of sequence positions processed so far at `layer_idx` (unaffected by sliding-window eviction).
+    #[must_use]
+    pub fn seq_pos(&self, layer_idx: usize) -> usize {
+        self.seen_tokens.get(layer_idx).copied().unwrap_or(0)
     }
 
     /// Append `(k, v)` of shape `(batch, kv_heads, seq_len, head_dim)` and return the concatenated history.
@@ -881,6 +1006,7 @@ impl KvCache {
         v: &Tensor,
         sliding_window: Option<usize>,
     ) -> Result<(Tensor, Tensor)> {
+        let added = k.dims()[2];
         let slot = self.layers.get_mut(layer_idx).ok_or_else(|| {
             ModelError::InvalidArgument(format!("kv cache layer index {layer_idx} out of bounds"))
         })?;
@@ -891,6 +1017,10 @@ impl KvCache {
             ),
             None => (k.clone(), v.clone()),
         };
+
+        if let Some(seen) = self.seen_tokens.get_mut(layer_idx) {
+            *seen += added;
+        }
 
         if let Some(win) = sliding_window {
             let cur_len = next_k.dims()[2];
@@ -904,11 +1034,12 @@ impl KvCache {
         Ok((next_k, next_v))
     }
 
-    /// Reset all cached key/value tensors.
+    /// Reset all cached key/value tensors and processed position counters.
     pub fn clear(&mut self) {
         for slot in &mut self.layers {
             *slot = None;
         }
+        self.seen_tokens.fill(0);
     }
 }
 

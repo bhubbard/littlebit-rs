@@ -3,6 +3,7 @@
 pub mod config;
 pub mod error;
 pub mod gemma;
+pub mod gemma4;
 pub mod hub;
 pub mod layer;
 pub mod llama;
@@ -11,14 +12,18 @@ pub mod opt;
 pub mod patch;
 pub mod phi;
 pub mod phi_attn;
+pub mod streaming;
 
-pub use config::{ModelArchitecture, ModelConfig, TokenIdSpec};
+pub use config::{ModelArchitecture, ModelConfig, ResolvedRopeParams, TokenIdSpec};
 pub use error::{ModelError, Result};
 pub use gemma::GemmaModel;
+pub use gemma4::{
+    Gemma4Expert, Gemma4Experts, Gemma4MoE, Gemma4Model, Gemma4Router, RouterDispatch,
+};
 pub use hub::{load_dense_model, resolve_model_dir, LittleBitModel, LoadOptions, PushOptions};
 pub use layer::{
     apply_activation, causal_mask, repeat_kv, Embedding, KvCache, LayerNorm, LinearLayer,
-    LinearLoadSpec, NormKind, RmsNorm, RotaryEmbedding,
+    LinearLoadSpec, NormKind, RmsNorm, RmsNormNoScale, RopeMode, RotaryEmbedding,
 };
 pub use llama::LlamaModel;
 pub use model::{CausalLm, CausalLmOutput, GenerateConfig, HiddenStatesMode, ParameterStats};
@@ -26,6 +31,9 @@ pub use opt::OptModel;
 pub use patch::{derive_layer_seed, patch_linear_layer, PatchPolicy, PatchSummary};
 pub use phi::PhiModel;
 pub use phi_attn::PhiAttentionProjection;
+pub use streaming::{
+    stream_quantize_checkpoint, StreamingQuantizeOptions, StreamingQuantizeReport,
+};
 
 #[cfg(test)]
 mod tests {
@@ -44,6 +52,8 @@ mod tests {
             ModelConfig::tiny_phi3(128, 64, 2),
             ModelConfig::tiny_gemma2(128, 64, 2),
             ModelConfig::tiny_gemma3(128, 64, 2),
+            ModelConfig::tiny_gemma4_dense(128, 64, 2),
+            ModelConfig::tiny_gemma4_moe(128, 64, 2, 8, 2),
             ModelConfig::tiny_opt(128, 64, 2),
         ];
 
@@ -150,6 +160,8 @@ mod tests {
             ModelConfig::tiny_qwen3(96, 64, 2),
             ModelConfig::tiny_phi3(96, 64, 2),
             ModelConfig::tiny_gemma3(96, 64, 2),
+            ModelConfig::tiny_gemma4_dense(96, 64, 2),
+            ModelConfig::tiny_gemma4_moe(96, 64, 2, 8, 2),
             ModelConfig::tiny_opt(96, 64, 2),
         ];
         let prompt = [3u32, 12, 7, 25, 14];

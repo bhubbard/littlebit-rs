@@ -1,4 +1,4 @@
-//! Unified [`CausalLm`] abstraction dispatching across all 6 supported LLM families.
+//! Unified [`CausalLm`] abstraction dispatching across all supported LLM families.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -13,6 +13,7 @@ use littlebit_core::{InferenceMode, LittleBitConfig, TrainMode, WeightState};
 use crate::config::{ModelArchitecture, ModelConfig};
 use crate::error::Result;
 use crate::gemma::GemmaModel;
+use crate::gemma4::Gemma4Model;
 use crate::layer::{KvCache, LinearLoadSpec};
 use crate::llama::LlamaModel;
 use crate::opt::OptModel;
@@ -97,7 +98,7 @@ impl Default for GenerateConfig {
     }
 }
 
-/// Unified causal language model supporting all architectures in `SamsungLabs/LittleBit`.
+/// Unified causal language model supporting all architectures in `SamsungLabs/LittleBit` plus Gemma 4.
 #[derive(Debug, Clone)]
 pub enum CausalLm {
     /// Llama, Llama 2/3, Qwen2/2.5/QwQ, and Qwen3.
@@ -106,6 +107,8 @@ pub enum CausalLm {
     Phi(PhiModel),
     /// Gemma 2 and Gemma 3.
     Gemma(GemmaModel),
+    /// Gemma 4 Dense and Mixture-of-Experts.
+    Gemma4(Box<Gemma4Model>),
     /// Meta OPT.
     Opt(Box<OptModel>),
 }
@@ -144,6 +147,9 @@ impl CausalLm {
             ModelArchitecture::Gemma2 | ModelArchitecture::Gemma3 => Ok(Self::Gemma(
                 GemmaModel::from_tensors(config, tensors, spec)?,
             )),
+            ModelArchitecture::Gemma4 => Ok(Self::Gemma4(Box::new(Gemma4Model::from_tensors(
+                config, tensors, spec,
+            )?))),
             ModelArchitecture::Opt => Ok(Self::Opt(Box::new(OptModel::from_tensors(
                 config, tensors, spec,
             )?))),
@@ -173,6 +179,9 @@ impl CausalLm {
             ModelArchitecture::Gemma2 | ModelArchitecture::Gemma3 => Ok(Self::Gemma(
                 GemmaModel::new_random(config, dtype, device, &mut rng)?,
             )),
+            ModelArchitecture::Gemma4 => Ok(Self::Gemma4(Box::new(Gemma4Model::new_random(
+                config, dtype, device, &mut rng,
+            )?))),
             ModelArchitecture::Opt => Ok(Self::Opt(Box::new(OptModel::new_random(
                 config, dtype, device, &mut rng,
             )?))),
@@ -193,12 +202,13 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.forward(input_ids, cache, hidden_mode),
             Self::Phi(m) => m.forward(input_ids, cache, hidden_mode),
             Self::Gemma(m) => m.forward(input_ids, cache, hidden_mode),
+            Self::Gemma4(m) => m.forward(input_ids, cache, hidden_mode),
             Self::Opt(m) => m.forward(input_ids, cache, hidden_mode),
         }
     }
 
     /// Apply LittleBit / LittleBit-2 quantization patch across all linear projections
-    /// (excluding `lm_head`, splitting `qkv_proj` on Phi, and scaling `k_proj`/`v_proj` by `kv_factor`).
+    /// (excluding `lm_head`, `router`, splitting `qkv_proj` on Phi, and scaling `k_proj`/`v_proj` by `kv_factor`).
     ///
     /// # Errors
     /// Returns an error if config validation or SVD/ITQ decomposition fails.
@@ -220,6 +230,9 @@ impl CausalLm {
             Self::Gemma(m) => {
                 m.apply_littlebit_patch(lb_cfg, &policy, train_mode, base_seed, &mut summary)?;
             }
+            Self::Gemma4(m) => {
+                m.apply_littlebit_patch(lb_cfg, &policy, train_mode, base_seed, &mut summary)?;
+            }
             Self::Opt(m) => {
                 m.apply_littlebit_patch(lb_cfg, &policy, train_mode, base_seed, &mut summary)?;
             }
@@ -236,6 +249,7 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.convert_to_packed(),
             Self::Phi(m) => m.convert_to_packed(),
             Self::Gemma(m) => m.convert_to_packed(),
+            Self::Gemma4(m) => m.convert_to_packed(),
             Self::Opt(m) => m.convert_to_packed(),
         }
     }
@@ -252,6 +266,7 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.make_non_quantized_trainable()?,
             Self::Phi(m) => m.make_non_quantized_trainable()?,
             Self::Gemma(m) => m.make_non_quantized_trainable()?,
+            Self::Gemma4(m) => m.make_non_quantized_trainable()?,
             Self::Opt(m) => m.make_non_quantized_trainable()?,
         }
         self.freeze_matching(exclude);
@@ -264,6 +279,7 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.freeze_matching(exclude),
             Self::Phi(m) => m.freeze_matching(exclude),
             Self::Gemma(m) => m.freeze_matching(exclude),
+            Self::Gemma4(m) => m.freeze_matching(exclude),
             Self::Opt(m) => m.freeze_matching(exclude),
         }
     }
@@ -275,6 +291,7 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.trainable_vars(),
             Self::Phi(m) => m.trainable_vars(),
             Self::Gemma(m) => m.trainable_vars(),
+            Self::Gemma4(m) => m.trainable_vars(),
             Self::Opt(m) => m.trainable_vars(),
         }
     }
@@ -287,6 +304,7 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.total_params(),
             Self::Phi(m) => m.total_params(),
             Self::Gemma(m) => m.total_params(),
+            Self::Gemma4(m) => m.total_params(),
             Self::Opt(m) => m.total_params(),
         };
         ParameterStats {
@@ -304,6 +322,7 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.pack_state_dict(),
             Self::Phi(m) => m.pack_state_dict(),
             Self::Gemma(m) => m.pack_state_dict(),
+            Self::Gemma4(m) => m.pack_state_dict(),
             Self::Opt(m) => m.pack_state_dict(),
         }
     }
@@ -315,6 +334,7 @@ impl CausalLm {
             Self::LlamaFamily(m) => m.config(),
             Self::Phi(m) => m.config(),
             Self::Gemma(m) => m.config(),
+            Self::Gemma4(m) => m.config(),
             Self::Opt(m) => m.config(),
         }
     }

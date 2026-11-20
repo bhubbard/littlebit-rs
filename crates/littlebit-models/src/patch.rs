@@ -25,7 +25,8 @@ impl Default for PatchPolicy {
 }
 
 impl PatchPolicy {
-    /// Build default upstream policy (`\.k_proj$` and `\.v_proj$` receive `kv_factor`; `lm_head` excluded).
+    /// Build default upstream policy (`\.k_proj$` and `\.v_proj$` receive `kv_factor`;
+    /// `lm_head` and MoE `router` projections are excluded).
     #[must_use]
     pub fn new() -> Self {
         let kv_patterns = vec![
@@ -34,7 +35,7 @@ impl PatchPolicy {
         ];
         Self {
             kv_patterns,
-            exclude_names: vec!["lm_head".to_string()],
+            exclude_names: vec!["lm_head".to_string(), "router".to_string()],
         }
     }
 
@@ -84,16 +85,18 @@ pub struct PatchSummary {
 }
 
 impl PatchSummary {
+    pub(crate) fn record_budget(&mut self, budget: &littlebit_core::BitBudget) {
+        self.patched_layers += 1;
+        self.total_quantized_weights += budget.in_features * budget.out_features;
+        self.total_quantized_bits += budget.total_bit_usage;
+        if self.total_quantized_weights > 0 {
+            self.avg_eff_bits = self.total_quantized_bits / (self.total_quantized_weights as f64);
+        }
+    }
+
     pub(crate) fn record_patched(&mut self, layer: &LinearLayer) {
         if let LinearLayer::LittleBit(lb) = layer {
-            let budget = lb.budget();
-            self.patched_layers += 1;
-            self.total_quantized_weights += budget.in_features * budget.out_features;
-            self.total_quantized_bits += budget.total_bit_usage;
-            if self.total_quantized_weights > 0 {
-                self.avg_eff_bits =
-                    self.total_quantized_bits / (self.total_quantized_weights as f64);
-            }
+            self.record_budget(lb.budget());
         }
     }
 

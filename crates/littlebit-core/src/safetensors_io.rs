@@ -176,6 +176,395 @@ pub fn load_and_unpack_state_dict(
     })
 }
 
+fn prepare_tensor_for_save(
+    key: &str,
+    tensor: &Tensor,
+    cast_policy: CastPolicy,
+) -> Result<(Tensor, usize)> {
+    let is_metadata_tensor = key.contains("packed")
+        || key.contains("shape")
+        || key.ends_with("._eff_bit_target")
+        || key.ends_with("._split_dim_final")
+        || key.ends_with("._eff_bit_actual");
+
+    let cpu_t = if tensor.device().is_cpu() {
+        tensor.clone()
+    } else {
+        tensor.to_device(&Device::Cpu)?
+    };
+
+    let final_t = match cast_policy {
+        CastPolicy::ToBf16 if !is_metadata_tensor && cpu_t.dtype() == DType::F32 => {
+            cpu_t.to_dtype(DType::BF16)?
+        }
+        _ => cpu_t,
+    };
+    let bytes = final_t.elem_count() * final_t.dtype().size_in_bytes();
+    Ok((final_t, bytes))
+}
+
+fn safetensors_dtype_to_candle(dtype: safetensors::Dtype) -> Result<DType> {
+    match dtype {
+        safetensors::Dtype::U8 => Ok(DType::U8),
+        safetensors::Dtype::U32 => Ok(DType::U32),
+        safetensors::Dtype::I16 => Ok(DType::I16),
+        safetensors::Dtype::I32 => Ok(DType::I32),
+        safetensors::Dtype::I64 => Ok(DType::I64),
+        safetensors::Dtype::BF16 => Ok(DType::BF16),
+        safetensors::Dtype::F16 => Ok(DType::F16),
+        safetensors::Dtype::F32 => Ok(DType::F32),
+        safetensors::Dtype::F64 => Ok(DType::F64),
+        other => Err(LittleBitError::InvalidConfig(format!(
+            "unsupported safetensors dtype {other:?} in streaming reader"
+        ))),
+    }
+}
+
+fn read_safetensors_header(file: &mut File) -> Result<(SafetensorsHeader, u64)> {
+    let mut len_buf = [0u8; 8];
+    file.read_exact(&mut len_buf)?;
+    let header_len = u64::from_le_bytes(len_buf) as usize;
+    if header_len > 100_000_000 {
+        return Err(LittleBitError::InvalidConfig(
+            "safetensors header exceeds 100 MB limit".to_string(),
+        ));
+    }
+
+    let mut header_bytes = vec![0u8; header_len];
+    file.read_exact(&mut header_bytes)?;
+    let header: SafetensorsHeader = serde_json::from_slice(&header_bytes)?;
+    let data_start = 8 + header_len as u64;
+    Ok((header, data_start))
+}
+
+/// Location metadata for a single tensor inside a safetensors shard on disk.
+#[derive(Debug, Clone)]
+pub struct TensorLocation {
+    /// Path to the `.safetensors` file holding this tensor.
+    pub shard_path: PathBuf,
+    /// Byte offset where the binary payload section starts (`8 + header_len`).
+    pub data_start: u64,
+    /// Safetensors element data type.
+    pub dtype: safetensors::Dtype,
+    /// Tensor dimensions.
+    pub shape: Vec<usize>,
+    /// Byte range `(start, end)` relative to `data_start`.
+    pub data_offsets: (usize, usize),
+}
+
+/// Safe streaming safetensors reader that parses headers once and seeks to load
+/// individual tensors or 3D dimension-0 slices on demand using zero `unsafe` code.
+#[derive(Debug)]
+pub struct SafetensorsReader {
+    locations: BTreeMap<String, TensorLocation>,
+    open_files: HashMap<PathBuf, File>,
+}
+
+impl SafetensorsReader {
+    /// Open a local single-file or sharded safetensors checkpoint directory.
+    ///
+    /// # Errors
+    /// Returns [`LittleBitError::CheckpointNotFound`] if no safetensors checkpoint exists in `dir`,
+    /// or I/O/header parsing errors.
+    pub fn open(dir: &Path) -> Result<Self> {
+        let shard_paths = resolve_safetensor_files(dir)?;
+        let mut locations = BTreeMap::new();
+        let mut open_files = HashMap::with_capacity(shard_paths.len());
+
+        for path in shard_paths {
+            let mut file = File::open(&path)?;
+            let (header, data_start) = read_safetensors_header(&mut file)?;
+            for (name, info) in header.tensors {
+                locations.insert(
+                    name,
+                    TensorLocation {
+                        shard_path: path.clone(),
+                        data_start,
+                        dtype: info.dtype,
+                        shape: info.shape,
+                        data_offsets: info.data_offsets,
+                    },
+                );
+            }
+            open_files.insert(path, file);
+        }
+
+        Ok(Self {
+            locations,
+            open_files,
+        })
+    }
+
+    /// Iterate over all tensor keys across all shards in deterministic lexicographical order.
+    pub fn tensor_names(&self) -> impl Iterator<Item = &str> {
+        self.locations.keys().map(String::as_str)
+    }
+
+    /// Return true if `name` is present in any shard.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.locations.contains_key(name)
+    }
+
+    /// Return location & shape metadata for `name` without reading tensor bytes from disk.
+    #[must_use]
+    pub fn tensor_info(&self, name: &str) -> Option<&TensorLocation> {
+        self.locations.get(name)
+    }
+
+    /// Total number of tensors indexed across all shards.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.locations.len()
+    }
+
+    /// Return true if zero tensors were indexed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.locations.is_empty()
+    }
+
+    fn read_slice(
+        &mut self,
+        shard_path: &Path,
+        abs_offset: u64,
+        byte_len: usize,
+    ) -> Result<Vec<u8>> {
+        if !self.open_files.contains_key(shard_path) {
+            let file = File::open(shard_path)?;
+            self.open_files.insert(shard_path.to_path_buf(), file);
+        }
+        let file = self
+            .open_files
+            .get_mut(shard_path)
+            .ok_or_else(|| LittleBitError::CheckpointNotFound(shard_path.display().to_string()))?;
+        let mut buf = vec![0u8; byte_len];
+        file.seek(SeekFrom::Start(abs_offset))?;
+        file.read_exact(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// Read and materialize a single tensor `name` onto `device`.
+    ///
+    /// # Errors
+    /// Returns [`LittleBitError::MissingTensor`] if absent or I/O/decoding errors.
+    pub fn load_tensor(&mut self, name: &str, device: &Device) -> Result<Tensor> {
+        let loc = self
+            .locations
+            .get(name)
+            .cloned()
+            .ok_or_else(|| LittleBitError::MissingTensor(name.to_string()))?;
+        let candle_dtype = safetensors_dtype_to_candle(loc.dtype)?;
+        let elem_count: usize = loc.shape.iter().product();
+        let expected_bytes = elem_count * candle_dtype.size_in_bytes();
+        let actual_bytes = loc.data_offsets.1.saturating_sub(loc.data_offsets.0);
+        if actual_bytes != expected_bytes {
+            return Err(LittleBitError::InvalidShape {
+                expected: format!("{expected_bytes} payload bytes for `{name}`"),
+                actual: format!("{actual_bytes} payload bytes"),
+            });
+        }
+        let buf = self.read_slice(
+            &loc.shard_path,
+            loc.data_start + loc.data_offsets.0 as u64,
+            actual_bytes,
+        )?;
+        Ok(Tensor::from_raw_buffer(
+            &buf,
+            candle_dtype,
+            &loc.shape,
+            device,
+        )?)
+    }
+
+    /// Stream only `tensor[index]` along dimension 0 without reading the rest of the tensor
+    /// into memory (enabling single-expert loading from fused 3D MoE weights).
+    ///
+    /// # Errors
+    /// Returns an error if `name` is missing, rank `< 2`, `index` is out of bounds, or reading fails.
+    pub fn load_tensor_slice_dim0(
+        &mut self,
+        name: &str,
+        index: usize,
+        device: &Device,
+    ) -> Result<Tensor> {
+        let loc = self
+            .locations
+            .get(name)
+            .cloned()
+            .ok_or_else(|| LittleBitError::MissingTensor(name.to_string()))?;
+        if loc.shape.len() < 2 {
+            return Err(LittleBitError::InvalidShape {
+                expected: "tensor with rank >= 2".to_string(),
+                actual: format!("{:?}", loc.shape),
+            });
+        }
+        if index >= loc.shape[0] {
+            return Err(LittleBitError::InvalidShape {
+                expected: format!("dim0 index < {}", loc.shape[0]),
+                actual: format!("{index}"),
+            });
+        }
+        let candle_dtype = safetensors_dtype_to_candle(loc.dtype)?;
+        let slice_shape = &loc.shape[1..];
+        let slice_elems: usize = slice_shape.iter().product();
+        let slice_bytes = slice_elems * candle_dtype.size_in_bytes();
+        let start_rel = loc.data_offsets.0 + index * slice_bytes;
+        if start_rel + slice_bytes > loc.data_offsets.1 {
+            return Err(LittleBitError::InvalidShape {
+                expected: format!("slice ending at byte {}", start_rel + slice_bytes),
+                actual: format!("tensor payload ends at byte {}", loc.data_offsets.1),
+            });
+        }
+        let buf = self.read_slice(
+            &loc.shard_path,
+            loc.data_start + start_rel as u64,
+            slice_bytes,
+        )?;
+        Ok(Tensor::from_raw_buffer(
+            &buf,
+            candle_dtype,
+            slice_shape,
+            device,
+        )?)
+    }
+}
+
+/// Incremental sharded safetensors writer that flushes completed shards to disk
+/// and frees their in-memory buffers as quantization progresses.
+#[derive(Debug)]
+pub struct ShardedSafetensorsWriter {
+    output_dir: PathBuf,
+    max_shard_bytes: usize,
+    cast_policy: CastPolicy,
+    pending: HashMap<String, Tensor>,
+    pending_bytes: usize,
+    completed_shards: Vec<(PathBuf, Vec<String>)>,
+    total_size: usize,
+}
+
+impl ShardedSafetensorsWriter {
+    /// Initialize a streaming sharded safetensors writer under `output_dir`.
+    ///
+    /// # Errors
+    /// Returns [`LittleBitError::InvalidConfig`] if `max_shard_bytes == 0` or creating `output_dir` fails.
+    pub fn new(
+        output_dir: impl AsRef<Path>,
+        max_shard_bytes: usize,
+        cast_policy: CastPolicy,
+    ) -> Result<Self> {
+        if max_shard_bytes == 0 {
+            return Err(LittleBitError::InvalidConfig(
+                "max_shard_bytes must be >= 1".to_string(),
+            ));
+        }
+        let dir = output_dir.as_ref().to_path_buf();
+        fs::create_dir_all(&dir)?;
+        Ok(Self {
+            output_dir: dir,
+            max_shard_bytes,
+            cast_policy,
+            pending: HashMap::new(),
+            pending_bytes: 0,
+            completed_shards: Vec::new(),
+            total_size: 0,
+        })
+    }
+
+    /// Stage a tensor for writing, applying [`CastPolicy`] and recording its serialized byte size.
+    ///
+    /// # Errors
+    /// Returns an error if moving or casting the tensor fails.
+    pub fn add_tensor(&mut self, key: String, tensor: Tensor) -> Result<()> {
+        let (final_t, bytes) = prepare_tensor_for_save(&key, &tensor, self.cast_policy)?;
+        if let Some(prev) = self.pending.insert(key, final_t) {
+            let prev_bytes = prev.elem_count() * prev.dtype().size_in_bytes();
+            self.pending_bytes = self.pending_bytes.saturating_sub(prev_bytes);
+            self.total_size = self.total_size.saturating_sub(prev_bytes);
+        }
+        self.pending_bytes += bytes;
+        self.total_size += bytes;
+        Ok(())
+    }
+
+    /// Flush the current pending shard to disk if `pending_bytes >= max_shard_bytes`.
+    ///
+    /// # Errors
+    /// Returns an error if writing the shard fails.
+    pub fn flush_if_needed(&mut self) -> Result<()> {
+        if self.pending_bytes >= self.max_shard_bytes {
+            self.flush_shard()?;
+        }
+        Ok(())
+    }
+
+    /// Force-flush any buffered tensors into a numbered temporary shard and clear memory.
+    ///
+    /// # Errors
+    /// Returns an error if writing the shard file fails.
+    pub fn flush_shard(&mut self) -> Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let shard_idx = self.completed_shards.len();
+        let tmp_path = self
+            .output_dir
+            .join(format!("._tmp_shard_{shard_idx:05}.safetensors"));
+        let keys: Vec<String> = self.pending.keys().cloned().collect();
+        candle_core::safetensors::save(&self.pending, &tmp_path)?;
+        self.pending.clear();
+        self.pending_bytes = 0;
+        self.completed_shards.push((tmp_path, keys));
+        Ok(())
+    }
+
+    /// Finalize shard filenames (`model.safetensors` or `model-00001-of-NNNNN.safetensors`),
+    /// write `model.safetensors.index.json`, and return the number of output shards written.
+    ///
+    /// # Errors
+    /// Returns an error if flushing, renaming, or writing `model.safetensors.index.json` fails.
+    pub fn finish(mut self) -> Result<usize> {
+        self.flush_shard()?;
+        let n = self.completed_shards.len();
+        let mut weight_map = BTreeMap::new();
+
+        let shards_written = if n == 0 {
+            let empty: HashMap<String, Tensor> = HashMap::new();
+            candle_core::safetensors::save(&empty, self.output_dir.join("model.safetensors"))?;
+            1
+        } else if n == 1 {
+            let (tmp_path, keys) = self.completed_shards.remove(0);
+            fs::rename(&tmp_path, self.output_dir.join("model.safetensors"))?;
+            for k in keys {
+                weight_map.insert(k, "model.safetensors".to_string());
+            }
+            1
+        } else {
+            for (idx, (tmp_path, keys)) in self.completed_shards.into_iter().enumerate() {
+                let shard_name = format!("model-{:05}-of-{:05}.safetensors", idx + 1, n);
+                fs::rename(&tmp_path, self.output_dir.join(&shard_name))?;
+                for k in keys {
+                    weight_map.insert(k, shard_name.clone());
+                }
+            }
+            n
+        };
+
+        let index = SafetensorsIndex {
+            metadata: IndexMetadata {
+                total_size: self.total_size,
+            },
+            weight_map,
+        };
+        let index_json = serde_json::to_string_pretty(&index)?;
+        fs::write(
+            self.output_dir.join("model.safetensors.index.json"),
+            index_json,
+        )?;
+        Ok(shards_written)
+    }
+}
+
 /// Save a state dictionary to `dir/model.safetensors` and write `dir/model.safetensors.index.json`.
 ///
 /// Matches upstream `main.py` / `hub.py` checkpoint layout.
@@ -194,26 +583,8 @@ pub fn save_packed_safetensors(
     let mut total_size = 0usize;
 
     for (key, tensor) in state_dict {
-        let is_metadata_tensor = key.contains("packed")
-            || key.contains("shape")
-            || key.ends_with("._eff_bit_target")
-            || key.ends_with("._split_dim_final")
-            || key.ends_with("._eff_bit_actual");
-
-        let cpu_t = if tensor.device().is_cpu() {
-            tensor.clone()
-        } else {
-            tensor.to_device(&Device::Cpu)?
-        };
-
-        let final_t = match cast_policy {
-            CastPolicy::ToBf16 if !is_metadata_tensor && cpu_t.dtype() == DType::F32 => {
-                cpu_t.to_dtype(DType::BF16)?
-            }
-            _ => cpu_t,
-        };
-
-        total_size += final_t.elem_count() * final_t.dtype().size_in_bytes();
+        let (final_t, bytes) = prepare_tensor_for_save(key, tensor, cast_policy)?;
+        total_size += bytes;
         weight_map.insert(key.clone(), "model.safetensors".to_string());
         prepared.insert(key.clone(), final_t);
     }
@@ -335,19 +706,7 @@ pub fn inspect_checkpoint(dir: &Path) -> Result<CheckpointStats> {
 
     for path in shard_paths {
         let mut file = File::open(&path)?;
-        let mut len_buf = [0u8; 8];
-        file.read_exact(&mut len_buf)?;
-        let header_len = u64::from_le_bytes(len_buf) as usize;
-        if header_len > 100_000_000 {
-            return Err(LittleBitError::InvalidConfig(
-                "safetensors header exceeds 100 MB limit".to_string(),
-            ));
-        }
-
-        let mut header_bytes = vec![0u8; header_len];
-        file.read_exact(&mut header_bytes)?;
-        let header: SafetensorsHeader = serde_json::from_slice(&header_bytes)?;
-        let data_start = 8 + header_len as u64;
+        let (header, data_start) = read_safetensors_header(&mut file)?;
 
         for (name, info) in header.tensors {
             let byte_len = info.data_offsets.1.saturating_sub(info.data_offsets.0);
@@ -554,6 +913,139 @@ mod tests {
         assert_eq!(loaded.tensors.len(), 2);
         assert_eq!(loaded.tensors["a.weight"].dims(), &[4, 4]);
         assert_eq!(loaded.tensors["b.weight"].dims(), &[2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn streaming_reader_loads_single_sharded_and_3d_slices_exact() -> Result<()> {
+        let dir = TempDir::new().expect("tempdir");
+        let dev = Device::Cpu;
+
+        let t3d = Tensor::randn(0.0f32, 1.0, (4, 6, 8), &dev)?.to_dtype(DType::BF16)?;
+        let t_f32 = Tensor::randn(0.0f32, 0.5, (5, 7), &dev)?;
+        let t_f16 = Tensor::randn(0.0f32, 0.5, (3, 4), &dev)?.to_dtype(DType::F16)?;
+        let t_i32 = Tensor::from_slice(&[1i32, -2, 3, 4], (2, 2), &dev)?;
+        let t_i64 = Tensor::from_slice(&[10i64, 20], (2,), &dev)?;
+
+        let mut s1 = HashMap::new();
+        s1.insert("experts.gate_up_proj".to_string(), t3d.clone());
+        s1.insert("w.f32".to_string(), t_f32.clone());
+        candle_core::safetensors::save(&s1, dir.path().join("model-00001-of-00002.safetensors"))?;
+
+        let mut s2 = HashMap::new();
+        s2.insert("w.f16".to_string(), t_f16.clone());
+        s2.insert("idx.i32".to_string(), t_i32.clone());
+        s2.insert("shape.i64".to_string(), t_i64.clone());
+        candle_core::safetensors::save(&s2, dir.path().join("model-00002-of-00002.safetensors"))?;
+
+        let index = serde_json::json!({
+            "metadata": { "total_size": 0 },
+            "weight_map": {
+                "experts.gate_up_proj": "model-00001-of-00002.safetensors",
+                "w.f32": "model-00001-of-00002.safetensors",
+                "w.f16": "model-00002-of-00002.safetensors",
+                "idx.i32": "model-00002-of-00002.safetensors",
+                "shape.i64": "model-00002-of-00002.safetensors"
+            }
+        });
+        fs::write(
+            dir.path().join("model.safetensors.index.json"),
+            serde_json::to_string_pretty(&index)?,
+        )?;
+
+        let mut reader = SafetensorsReader::open(dir.path())?;
+        assert_eq!(reader.len(), 5);
+        assert!(reader.contains("experts.gate_up_proj"));
+
+        let baseline = load_raw_safetensors_dir(dir.path(), &dev)?;
+        for name in ["w.f32", "w.f16", "idx.i32", "shape.i64"] {
+            let got = reader.load_tensor(name, &dev)?;
+            let exp = &baseline[name];
+            assert_eq!(got.dtype(), exp.dtype());
+            assert_eq!(got.dims(), exp.dims());
+            let diff = got
+                .to_dtype(DType::F32)?
+                .sub(&exp.to_dtype(DType::F32)?)?
+                .abs()?
+                .max_all()?
+                .to_scalar::<f32>()?;
+            assert_eq!(diff, 0.0, "tensor `{name}` mismatch");
+        }
+
+        for e in 0..4 {
+            let slice = reader.load_tensor_slice_dim0("experts.gate_up_proj", e, &dev)?;
+            let expected = t3d.get(e)?;
+            assert_eq!(slice.dims(), &[6, 8]);
+            assert_eq!(slice.dtype(), DType::BF16);
+            let diff = slice
+                .to_dtype(DType::F32)?
+                .sub(&expected.to_dtype(DType::F32)?)?
+                .abs()?
+                .max_all()?
+                .to_scalar::<f32>()?;
+            assert_eq!(diff, 0.0, "3D slice {e} mismatch");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sharded_writer_splits_shards_and_roundtrips_with_inspect() -> Result<()> {
+        let dir = TempDir::new().expect("tempdir");
+        let dev = Device::Cpu;
+
+        let cfg = LittleBitConfig {
+            eff_bit: Some(0.5),
+            residual: false,
+            use_itq: true,
+            itq_n_iter: 5,
+            ..Default::default()
+        };
+        fs::write(
+            dir.path().join("littlebit_config.json"),
+            serde_json::to_string_pretty(&cfg)?,
+        )?;
+
+        // Small max_shard_bytes forces at least 2 output shards across two LittleBit layers.
+        let mut writer = ShardedSafetensorsWriter::new(dir.path(), 512, CastPolicy::ToBf16)?;
+        for idx in 0..2 {
+            let w = Tensor::randn(0.0f32, 0.5, (64, 64), &dev)?;
+            let layer = LittleBitLinear::from_dense_weight(
+                &w,
+                None,
+                &cfg,
+                1.0,
+                TrainMode::Eval,
+                idx as u64,
+            )?;
+            let sd = layer.pack_state_dict(&format!("model.layers.{idx}.self_attn.q_proj"))?;
+            for (k, v) in sd {
+                writer.add_tensor(k, v)?;
+            }
+            writer.flush_if_needed()?;
+        }
+        let shards_written = writer.finish()?;
+        assert!(
+            shards_written >= 2,
+            "expected multiple shards, got {shards_written}"
+        );
+        assert!(dir.path().join("model.safetensors.index.json").is_file());
+        assert!(dir
+            .path()
+            .join(format!("model-00001-of-{shards_written:05}.safetensors"))
+            .is_file());
+
+        let stats = inspect_checkpoint(dir.path())?;
+        assert!(stats.is_packed);
+        assert_eq!(stats.quantized_layer_count, 2);
+
+        let unpacked = load_and_unpack_state_dict(dir.path(), DType::F32, &dev)?;
+        assert_eq!(unpacked.format, CheckpointFormat::Packed);
+        assert!(unpacked
+            .tensors
+            .contains_key("model.layers.0.self_attn.q_proj.U"));
+        assert!(unpacked
+            .tensors
+            .contains_key("model.layers.1.self_attn.q_proj.U"));
         Ok(())
     }
 }

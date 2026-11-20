@@ -21,6 +21,7 @@
           <li><a href="#crates">Crates</a></li>
           <li><a href="#models">Models</a></li>
           <li><a href="#quickstart">Quickstart</a></li>
+          <li><a href="#benchmarks">Benchmarks</a></li>
           <li><a href="#audit">Audit</a></li>
           <li><a href="./api/littlebit_core/index.html">API Docs</a></li>
           <li><a href="https://github.com/bhubbard/littlebit-rs">GitHub</a></li>
@@ -269,6 +270,216 @@ cargo run --release -p littlebit-cli -- eval \
 cargo run --release -p littlebit-cli -- generate \
   --model-id ./outputs/Llama-2-7b-LittleBit-2 \
   --packed-inference --prompt "Sub-1-bit LLM compression works by" --max-tokens 64</code></pre>
+      </div>
+    </section>
+
+    <section id="benchmarks" class="section">
+      <h2>Benchmarks</h2>
+      <p>
+        Measured on an <strong>Apple M3 Pro</strong> (<code>arm64</code>, 11 CPU cores, 18 GiB RAM,
+        <code>rustc 1.100.0</code>, <code>--release</code>) using deterministic synthetic tensors.
+        See <a href="https://github.com/bhubbard/littlebit-rs/blob/main/BENCHMARKS.md">BENCHMARKS.md</a>
+        for full default CPU vs. Apple Accelerate tables and batched prefill (<code>b=16</code>) numbers.
+      </p>
+
+      <h3>Reproduce Benchmark Suite</h3>
+      <div class="copyable">
+        <span class="copy">
+          <button type="button" class="copy-button" command="--copy" commandfor="cmd-bench" aria-label="Copy benchmark commands">
+            <span class="icon" aria-hidden="true"></span>
+          </button>
+          <span class="tip" role="status"></span>
+        </span>
+        <pre tabindex="0"><code id="cmd-bench"># Default CPU (faer + rayon)
+cargo run --release -p littlebit-cli --example bench
+
+# macOS Apple Accelerate BLAS
+cargo run --release -p littlebit-cli --features accelerate --example bench</code></pre>
+      </div>
+
+      <h3>Projection Decode Latency &amp; Compression (<code>batch = 1</code>)</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-proj-caption" class="table-wrapper">
+        <table class="bench-table-proj">
+          <caption id="bench-proj-caption">LittleBitLinear 1-Token Decode &amp; Footprint (Apple M3 Pro)</caption>
+          <thead>
+            <tr>
+              <th scope="col">Projection</th>
+              <th scope="col"><code>eff_bit</code></th>
+              <th scope="col">Packed Size</th>
+              <th scope="col">vs FP16</th>
+              <th scope="col">Dense F32 (Accel)</th>
+              <th scope="col">Unpacked LB (Accel)</th>
+              <th scope="col">Packed 1-Bit (Accel)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Llama-7B Attn 4096&times;4096 (single)</th>
+              <td><code>0.098</code></td>
+              <td>222.2 KiB</td>
+              <td>147.50&times;</td>
+              <td>1.57 ms</td>
+              <td>4.56 ms</td>
+              <td><strong>0.27 ms</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">Llama-7B Attn 4096&times;4096 (residual)</th>
+              <td><code>0.493</code></td>
+              <td>1.05 MiB</td>
+              <td>30.47&times;</td>
+              <td>1.16 ms</td>
+              <td>24.85 ms</td>
+              <td><strong>1.30 ms</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">Llama-7B Attn 4096&times;4096 (residual)</th>
+              <td><code>0.994</code></td>
+              <td>2.06 MiB</td>
+              <td>15.52&times;</td>
+              <td>1.58 ms</td>
+              <td>52.01 ms</td>
+              <td><strong>2.51 ms</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">Llama-7B MLP 4096&times;11008 (residual)</th>
+              <td><code>0.499</code></td>
+              <td>2.77 MiB</td>
+              <td>31.00&times;</td>
+              <td>4.29 ms</td>
+              <td>68.04 ms</td>
+              <td><strong>2.77 ms</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Binary Packer &amp; Unpacker Throughput (CPU Default)</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-packer-caption" class="table-wrapper">
+        <table class="bench-table-packer">
+          <caption id="bench-packer-caption">LSB-First 32-Bit <code>pack_i8_slice</code> &amp; <code>unpack_to_i8</code></caption>
+          <thead>
+            <tr>
+              <th scope="col">Shape</th>
+              <th scope="col">Packed Size</th>
+              <th scope="col">Pack (ms)</th>
+              <th scope="col">Pack Speed</th>
+              <th scope="col">Unpack (ms)</th>
+              <th scope="col">Unpack Speed</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">1024 &times; 4096</th>
+              <td>0.50 MiB</td>
+              <td>18.03 ms</td>
+              <td>232.7 MW/s</td>
+              <td>2.69 ms</td>
+              <td>1,559.1 MW/s</td>
+            </tr>
+            <tr>
+              <th scope="row">4096 &times; 4096</th>
+              <td>2.00 MiB</td>
+              <td>72.87 ms</td>
+              <td>230.2 MW/s</td>
+              <td>11.18 ms</td>
+              <td>1,500.6 MW/s</td>
+            </tr>
+            <tr>
+              <th scope="row">4096 &times; 11008</th>
+              <td>5.38 MiB</td>
+              <td>196.00 ms</td>
+              <td>230.0 MW/s</td>
+              <td>29.82 ms</td>
+              <td>1,512.1 MW/s</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Joint-ITQ Initialization &amp; Reconstruction Error (<code>eff_bit = 0.5</code>)</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-init-caption" class="table-wrapper">
+        <table class="bench-table-init">
+          <caption id="bench-init-caption">SVD-Only vs. 20-Iter Joint-ITQ Relative Frobenius Error</caption>
+          <thead>
+            <tr>
+              <th scope="col">Shape</th>
+              <th scope="col">Method</th>
+              <th scope="col"><code>split_dim</code></th>
+              <th scope="col">Init Time (Default)</th>
+              <th scope="col">Init Time (Accel)</th>
+              <th scope="col">Rel. Frob. Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">1024 &times; 1024</th>
+              <td>SVD-only</td>
+              <td>104</td>
+              <td>92.46 ms</td>
+              <td>95.51 ms</td>
+              <td>0.88363</td>
+            </tr>
+            <tr>
+              <th scope="row">1024 &times; 1024</th>
+              <td><strong>Joint-ITQ (20 iters)</strong></td>
+              <td>104</td>
+              <td>201.67 ms</td>
+              <td>222.82 ms</td>
+              <td><strong>0.86192</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">2048 &times; 2048</th>
+              <td>SVD-only</td>
+              <td>232</td>
+              <td>454.61 ms</td>
+              <td>517.75 ms</td>
+              <td>0.87422</td>
+            </tr>
+            <tr>
+              <th scope="row">2048 &times; 2048</th>
+              <td><strong>Joint-ITQ (20 iters)</strong></td>
+              <td>232</td>
+              <td>949.41 ms</td>
+              <td>983.07 ms</td>
+              <td><strong>0.84829</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>4-Layer Causal LM Storage &amp; KV-Cached Decode Throughput</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-gen-caption" class="table-wrapper">
+        <table class="bench-table-gen">
+          <caption id="bench-gen-caption">32-Token Greedy Decode (16-Token Prompt, <code>0.469 avg bpw</code>)</caption>
+          <thead>
+            <tr>
+              <th scope="col">Model</th>
+              <th scope="col">Layers Size</th>
+              <th scope="col">vs FP16</th>
+              <th scope="col">Dense (Accel)</th>
+              <th scope="col">Unpacked (Accel)</th>
+              <th scope="col">Packed 1-Bit (Accel)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Llama-4L (h=512, i=1376, v=4096)</th>
+              <td>0.76 MiB</td>
+              <td>29.19&times;</td>
+              <td>23.9 tok/s</td>
+              <td>51.3 tok/s</td>
+              <td><strong>69.4 tok/s</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">Qwen3-4L (h=512, i=1376, v=4096)</th>
+              <td>0.76 MiB</td>
+              <td>29.19&times;</td>
+              <td>23.7 tok/s</td>
+              <td>50.6 tok/s</td>
+              <td><strong>67.0 tok/s</strong></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 

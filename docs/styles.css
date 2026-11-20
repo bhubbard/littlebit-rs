@@ -321,6 +321,43 @@ table {
   --label-3: "Notable Support";
 }
 
+.bench-table-proj {
+  --label-1: "Projection";
+  --label-2: "eff_bit";
+  --label-3: "Packed Size";
+  --label-4: "vs FP16";
+  --label-5: "Dense F32 (Accel)";
+  --label-6: "Unpacked LB (Accel)";
+  --label-7: "Packed 1-Bit (Accel)";
+}
+
+.bench-table-packer {
+  --label-1: "Shape";
+  --label-2: "Packed Size";
+  --label-3: "Pack (ms)";
+  --label-4: "Pack Speed";
+  --label-5: "Unpack (ms)";
+  --label-6: "Unpack Speed";
+}
+
+.bench-table-init {
+  --label-1: "Shape";
+  --label-2: "Method";
+  --label-3: "split_dim";
+  --label-4: "Init Time (Default)";
+  --label-5: "Init Time (Accel)";
+  --label-6: "Rel. Frob. Error";
+}
+
+.bench-table-gen {
+  --label-1: "Model";
+  --label-2: "Layers Size";
+  --label-3: "vs FP16";
+  --label-4: "Dense (Accel)";
+  --label-5: "Unpacked (Accel)";
+  --label-6: "Packed 1-Bit (Accel)";
+}
+
 caption {
   padding: 0.7rem 0.9rem;
   text-align: start;
@@ -412,6 +449,30 @@ tbody th {
 
   td:nth-child(3)::before {
     content: var(--label-3) ": ";
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  td:nth-child(4)::before {
+    content: var(--label-4) ": ";
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  td:nth-child(5)::before {
+    content: var(--label-5) ": ";
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  td:nth-child(6)::before {
+    content: var(--label-6) ": ";
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  td:nth-child(7)::before {
+    content: var(--label-7) ": ";
     font-weight: 600;
     color: var(--muted);
   }

@@ -2,7 +2,7 @@
 
 Pure-Rust port of **[SamsungLabs/LittleBit](https://github.com/SamsungLabs/LittleBit)** — implementing **LittleBit** (NeurIPS 2025) and **LittleBit-2 Joint-ITQ** (ICML 2026) for sub-1-bit LLM compression, Quantization-Aware Knowledge Distillation (QAT), bit-packed safetensors persistence, and compact 1-bit inference.
 
-**Documentation & Rustdoc API:** [https://bhubbard.github.io/littlebit-rs/](https://bhubbard.github.io/littlebit-rs/)
+**Documentation & Rustdoc API:** [https://bhubbard.github.io/littlebit-rs/](https://bhubbard.github.io/littlebit-rs/) &middot; **Benchmarks:** [BENCHMARKS.md](BENCHMARKS.md)
 
 ---
 
@@ -145,6 +145,19 @@ littlebit push --model-dir ./outputs/Llama-2-7b-LittleBit-2 \
 - **Single-Node Training**: `littlebit train` executes single-process QAT + KD using Candle autograd (`rms_norm_slow`, `layer_norm_slow`, `rope_slow`, and custom `STEBinary` / `SmoothSign` backward ops) and parses `configs/zero*.json` for scheduler/clipping/gradient-accumulation hyperparameters without multi-node MPI/DeepSpeed dependency.
 - **Zero-Shot Evaluation**: Implements native conditional log-likelihood and byte-normalized `acc_norm` scoring over JSONL multiple-choice benchmarks (`context`, `choices`, `gold_index`) without shelling out to Python `lm-eval`.
 - **Mixed-Bit Overrides & Verification**: Supports per-block `--eff-bit-layers` bit-budget overrides and includes a 59-test Rust verification suite covering upstream issue regressions (Issue #21 bit unpacking and Issue #24 FP16 matmul overflow guard) alongside community audit and benchmark checks.
+
+---
+
+## Benchmarks
+
+Run the pure-Rust release benchmark suite (`pack_i8_slice`, `LittleBitLinear` vs. `PackedLittleBitLinear`, Joint-ITQ initialization, and 4-layer KV-cached generation):
+
+```bash
+cargo run --release -p littlebit-cli --example bench
+cargo run --release -p littlebit-cli --features accelerate --example bench
+```
+
+See [BENCHMARKS.md](BENCHMARKS.md) for measured results on Apple M3 Pro (`29.19×`–`147.50×` compression vs. FP16, `0.27 ms`–`2.77 ms` 1-bit decode projections, and up to `69.4 tok/s` packed 4-layer generation).
 
 ---
 

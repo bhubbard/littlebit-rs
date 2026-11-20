@@ -2168,6 +2168,8 @@ dependencies = [
  "littlebit-core",
  "littlebit-models",
  "littlebit-train",
+ "rand 0.9.5",
+ "rand_chacha",
  "serde",
  "serde_json",
  "tempfile",

@@ -1,0 +1,7 @@
+/target
+outputs/
+.DS_Store
+*.safetensors
+*.swp
+*.swo
+*~

@@ -1,0 +1,35 @@
+littlebit-rs (Pure-Rust Port of SamsungLabs/LittleBit)
+Derived from https://github.com/SamsungLabs/LittleBit under the CC BY-NC 4.0 License.
+
+LittleBit (NeurIPS 2025) & LittleBit-2 (ICML 2026)
+Copyright (c) 2025-2026 Banseok Lee, Dongkyu Kim, Youngcheon You, Youngmin Kim (Samsung Research).
+
+Third-Party Notices & Attributions
+====================================
+
+PhiQKVSplitAttention (ported in crates/littlebit-models/src/phi_attn.rs)
+------------------------------------------------------------------------
+Derived from upstream quantization/modules/attention.py:
+Copyright 2024 Microsoft and the HuggingFace Inc. team.
+Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+
+Data Utilities (ported in crates/littlebit-train/src/data.rs)
+-------------------------------------------------------------
+Derived from upstream utils/datautils.py:
+Copyright (c) 2024 Dongwon Jo
+Modified by Dongkyu Kim in 2026 (Samsung Electronics Co., Ltd.)
+Licensed under the MIT License.
+
+Community Audit & Benchmark Test Suites
+---------------------------------------
+Test specifications and regression cases in crates/*/tests/community_audit.rs,
+as well as mixed-bit per-block config (`eff_bit_layers`) and warm-start helpers,
+are informed by and include test cases ported from:
+
+- `timurista/littlebit-deployment-audit` (Copyright (c) 2026 Tim Urista;
+  CC BY-NC 4.0 for packer/accounting audit & regression test cases;
+  MIT License for quality-pilot loss test cases).
+- `christopherrobertbrooks-tech/littlebit-bench` (CC BY-NC 4.0;
+  Volta FP16 overflow & `--eff_bit_layers` mixed-bits specifications and test cases).
+
+Not affiliated with or endorsed by Samsung Research or the LittleBit authors.

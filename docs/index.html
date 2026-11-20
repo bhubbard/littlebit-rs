@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>littlebit-rs — Pure-Rust Sub-1-Bit LLM Compression (LittleBit &amp; LittleBit-2)</title>
+  <meta name="description" content="Pure-Rust port of SamsungLabs/LittleBit and LittleBit-2 Joint-ITQ for sub-1-bit LLM compression, QAT knowledge distillation, bit-packed safetensors persistence, and 1-bit packed inference.">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#overview">littlebit-rs</a>
+      <nav aria-label="Primary">
+        <ul class="nav-list">
+          <li><a href="#overview">Overview</a></li>
+          <li><a href="#crates">Crates</a></li>
+          <li><a href="#models">Models</a></li>
+          <li><a href="#quickstart">Quickstart</a></li>
+          <li><a href="#audit">Audit</a></li>
+          <li><a href="./api/littlebit_core/index.html">API Docs</a></li>
+          <li><a href="https://github.com/bhubbard/littlebit-rs">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="container">
+    <section id="overview" class="hero">
+      <p class="eyebrow">NeurIPS 2025 &amp; ICML 2026 &middot; Pure Rust Port</p>
+      <h1>Sub-1-Bit LLM Compression Without Python</h1>
+      <p class="lead">
+        <strong>littlebit-rs</strong> is a pure-Rust implementation of
+        <a href="https://github.com/SamsungLabs/LittleBit">SamsungLabs/LittleBit</a> and
+        <strong>LittleBit-2 Joint-ITQ</strong> built on Candle and <code>faer</code> — covering
+        low-rank SVD + Joint-ITQ initialization, Knowledge Distillation QAT, upstream bit-identical
+        <code>i32</code> safetensors packing, and direct 1-bit packed inference.
+      </p>
+
+      <ul class="stat-grid" aria-label="Project highlights">
+        <li class="stat-card">
+          <span class="stat-value">0.1–1.0 bpw</span>
+          <span class="stat-label">Sub-1-bit latent factorization</span>
+        </li>
+        <li class="stat-card">
+          <span class="stat-value">6 Families</span>
+          <span class="stat-label">Llama, Qwen2/3, Phi-3/4, Gemma 2/3, OPT</span>
+        </li>
+        <li class="stat-card">
+          <span class="stat-value">59 Tests</span>
+          <span class="stat-label">Upstream &amp; community audit parity</span>
+        </li>
+        <li class="stat-card">
+          <span class="stat-value">0 Unsafe</span>
+          <span class="stat-label">Workspace forbids <code>unsafe_code</code></span>
+        </li>
+      </ul>
+
+      <div class="cta-row">
+        <a class="btn btn-primary" href="./api/littlebit_core/index.html">Browse Rustdoc API</a>
+        <a class="btn btn-secondary" href="https://github.com/bhubbard/littlebit-rs">View Repository</a>
+      </div>
+    </section>
+
+    <section id="crates" class="section">
+      <h2>Workspace Crates</h2>
+      <p>
+        Organized into four focused crates with zero Python runtime or build dependencies.
+        Select any library crate to open its generated <code>rustdoc</code> reference.
+      </p>
+
+      <div tabindex="0" role="region" aria-labelledby="crates-caption" class="table-wrapper">
+        <table class="crates-table">
+          <caption id="crates-caption">Workspace Crates</caption>
+          <thead>
+            <tr>
+              <th scope="col">Crate</th>
+              <th scope="col">Role</th>
+              <th scope="col">API Docs</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>littlebit-core</code></th>
+              <td>
+                <code>STEBinary</code> &amp; <code>SmoothSign</code> autograd ops, LSB-first
+                32-bit <code>binary_packer</code> / <code>binary_unpacker</code>,
+                <code>PackedBinaryMatrix</code> matmul, <code>faer</code> thin &amp; randomized SVD,
+                Joint-ITQ rotation, <code>LittleBitLinear</code> / <code>PackedLittleBitLinear</code>,
+                safeload/inspection, and per-block <code>eff_bit_layers</code> parsing
+              </td>
+              <td><a href="./api/littlebit_core/index.html">littlebit_core docs</a></td>
+            </tr>
+            <tr>
+              <th scope="row"><code>littlebit-models</code></th>
+              <td>
+                Differentiable decoders for Llama, Qwen2/2.5/QwQ, Qwen3, Phi-3/4
+                (<code>PhiQKVSplitAttention</code>), Gemma 2/3, and OPT; dynamic
+                <code>apply_littlebit_patch</code>; KV-cached generation; Hugging Face Hub upload &amp; reload
+              </td>
+              <td><a href="./api/littlebit_models/index.html">littlebit_models docs</a></td>
+            </tr>
+            <tr>
+              <th scope="row"><code>littlebit-train</code></th>
+              <td>
+                Knowledge Distillation QAT trainer (<code>KdTrainer</code>) with KL-divergence
+                logit loss and scaled layer-to-layer hidden-state MSE, cosine warmup scheduler,
+                SHA-256[:7] dataset caching, perplexity &amp; zero-shot evaluation, and
+                <code>configs/zero*.json</code> parsing
+              </td>
+              <td><a href="./api/littlebit_train/index.html">littlebit_train docs</a></td>
+            </tr>
+            <tr>
+              <th scope="row"><code>littlebit-cli</code></th>
+              <td>
+                Unified <code>littlebit</code> binary exposing <code>quantize</code>,
+                <code>train</code>, <code>eval</code>, <code>generate</code>, <code>inspect</code>,
+                <code>pack</code>, <code>unpack</code>, and <code>push</code> subcommands
+              </td>
+              <td><a href="#quickstart">CLI Quickstart</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="models" class="section">
+      <h2>Supported Model Families</h2>
+      <p>
+        Handles both legacy unpacked checkpoints and modern bit-packed checkpoints with automatic
+        architecture detection from Hugging Face <code>config.json</code>.
+      </p>
+
+      <div tabindex="0" role="region" aria-labelledby="models-caption" class="table-wrapper">
+        <table class="models-table">
+          <caption id="models-caption">Supported Causal LM Architectures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Family</th>
+              <th scope="col"><code>model_type</code></th>
+              <th scope="col">Notable Support</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Llama / Llama 2 / Llama 3</th>
+              <td><code>"llama"</code></td>
+              <td>RoPE, GQA/MQA, SwiGLU MLP, <code>kv_factor</code> rank boost on K/V projections</td>
+            </tr>
+            <tr>
+              <th scope="row">Qwen2 / Qwen2.5 / QwQ</th>
+              <td><code>"qwen2"</code></td>
+              <td>Attention QKV bias support, RMSNorm, tied or untied LM head exclusion</td>
+            </tr>
+            <tr>
+              <th scope="row">Qwen3</th>
+              <td><code>"qwen3"</code></td>
+              <td>Per-head <code>q_norm</code> / <code>k_norm</code>, FP16 overflow-safe scaling, mixed-bit <code>--eff-bit-layers</code></td>
+            </tr>
+            <tr>
+              <th scope="row">Phi-3 / Phi-4</th>
+              <td><code>"phi3"</code></td>
+              <td><code>PhiQKVSplitAttention</code> + <code>split_qkv()</code> for exact <code>kv_factor</code> scaling on fused QKV</td>
+            </tr>
+            <tr>
+              <th scope="row">Gemma 2 / Gemma 3</th>
+              <td><code>"gemma2"</code>, <code>"gemma3"</code>, <code>"gemma3_text"</code></td>
+              <td>Pre/post feedforward norms, softcapping &amp; attention logit scaling parity</td>
+            </tr>
+            <tr>
+              <th scope="row">Meta OPT</th>
+              <td><code>"opt"</code></td>
+              <td>Learned positional embeddings, <code>project_in</code>/<code>project_out</code>, ReLU FFN</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="quickstart" class="section">
+      <h2>CLI Quickstart</h2>
+      <p>
+        Accepts both Rust-native kebab-case (<code>--use-itq True</code>) and upstream
+        underscored flags (<code>--use_itq True</code>).
+      </p>
+
+      <h3>Build (CPU, Accelerate, Metal, or CUDA)</h3>
+      <div class="copyable">
+        <span class="copy">
+          <button type="button" class="copy-button" command="--copy" commandfor="cmd-build" aria-label="Copy build commands">
+            <span class="icon" aria-hidden="true"></span>
+          </button>
+          <span class="tip" role="status"></span>
+        </span>
+        <pre tabindex="0"><code id="cmd-build"># Default CPU build (faer multi-threaded BLAS/SVD + rayon)
+cargo build --release
+
+# Apple Silicon Accelerate / Metal GPU / NVIDIA CUDA
+cargo build --release --features accelerate
+cargo build --release --features metal
+cargo build --release --features cuda</code></pre>
+      </div>
+
+      <h3>Post-Training Quantization with LittleBit-2 Joint-ITQ &amp; Mixed Bits</h3>
+      <div class="copyable">
+        <span class="copy">
+          <button type="button" class="copy-button" command="--copy" commandfor="cmd-quantize" aria-label="Copy quantize command">
+            <span class="icon" aria-hidden="true"></span>
+          </button>
+          <span class="tip" role="status"></span>
+        </span>
+        <pre tabindex="0"><code id="cmd-quantize">cargo run --release -p littlebit-cli -- quantize \
+  --model-id meta-llama/Llama-2-7b-hf \
+  --save-dir ./outputs/Llama-2-7b-LittleBit-2 \
+  --quant-func SmoothSign \
+  --eff-bit 1.0 \
+  --eff-bit-layers "0-3:2.0" \
+  --residual True \
+  --kv-factor 1.0 \
+  --min-split-dim 8 \
+  --use-itq True \
+  --itq-n-iter 50</code></pre>
+      </div>
+
+      <h3>Knowledge Distillation QAT Training</h3>
+      <div class="copyable">
+        <span class="copy">
+          <button type="button" class="copy-button" command="--copy" commandfor="cmd-train" aria-label="Copy train command">
+            <span class="icon" aria-hidden="true"></span>
+          </button>
+          <span class="tip" role="status"></span>
+        </span>
+        <pre tabindex="0"><code id="cmd-train">cargo run --release -p littlebit-cli -- train \
+  --model-id meta-llama/Llama-2-7b-hf \
+  --dataset c4_wiki \
+  --save-dir ./outputs/Llama-2-7b-LittleBit-2 \
+  --num-train-epochs 5.0 \
+  --per-device-train-batch-size 4 \
+  --lr 4e-5 \
+  --warmup-ratio 0.02 \
+  --quant-func SmoothSign \
+  --residual True \
+  --eff-bit 1.0 \
+  --l2l-loss-scale 10.0 \
+  --use-itq True</code></pre>
+      </div>
+
+      <h3>Inspect, Evaluate (1-Bit Packed), &amp; Generate</h3>
+      <div class="copyable">
+        <span class="copy">
+          <button type="button" class="copy-button" command="--copy" commandfor="cmd-eval" aria-label="Copy evaluate and inspect commands">
+            <span class="icon" aria-hidden="true"></span>
+          </button>
+          <span class="tip" role="status"></span>
+        </span>
+        <pre tabindex="0"><code id="cmd-eval"># Header-only layer &amp; compression ratio inspection (no full weight load)
+cargo run --release -p littlebit-cli -- inspect --model-id ./outputs/Llama-2-7b-LittleBit-2
+
+# Packed 1-bit perplexity evaluation
+cargo run --release -p littlebit-cli -- eval \
+  --model-id ./outputs/Llama-2-7b-LittleBit-2 \
+  --packed-inference --seqlen 2048 --ppl-task wikitext2
+
+# Autoregressive generation
+cargo run --release -p littlebit-cli -- generate \
+  --model-id ./outputs/Llama-2-7b-LittleBit-2 \
+  --packed-inference --prompt "Sub-1-bit LLM compression works by" --max-tokens 64</code></pre>
+      </div>
+    </section>
+
+    <section id="audit" class="section">
+      <h2>Upstream Parity &amp; Community Audits</h2>
+      <ul class="audit-list">
+        <li>
+          <strong>Bit-Exact 1-Bit Unpacking (Issue #21 / PR #22 &amp; Deployment Audit):</strong>
+          Uses the exact LSB-first right-shift decoder (<code>(word &gt;&gt; bit) &amp; 1</code>) and
+          validates all <strong>2,010 deterministic test cases</strong> across widths
+          <code>[1, 7, 8, 31, 32, 33, 64]</code> against an independent shift-free byte-table
+          reference decoder, plus full <code>SmoothSign</code> + residual checkpoint round-trips
+          with bitwise-equal <code>F32</code> outputs.
+        </li>
+        <li>
+          <strong>FP16 Overflow Protection (Issue #24 &amp; Volta Bench):</strong>
+          Guards intermediate binary matmuls via exact power-of-two scaling
+          (<code>pow2_at_least</code>) on GPU paths and <code>F32</code> accumulation on CPU,
+          keeping long-summation projections (e.g., <code>in_features = 2048</code>) free of NaN/Inf.
+        </li>
+        <li>
+          <strong>Mixed-Bit Patching &amp; Warm-Start:</strong>
+          Supports <code>--eff-bit-layers</code> (e.g. <code>"0-7,27:2.0"</code>) persisted in
+          <code>littlebit_config.json</code> and <code>config.json</code>, plus
+          <code>warm_start_from_binarized(latent_mag)</code> for resuming QAT from finished packed models.
+        </li>
+        <li>
+          <strong>Zero Unsafe &amp; Clean Tooling:</strong>
+          Workspace enforces <code>unsafe_code = "forbid"</code>, passes <code>cargo fmt --check</code>,
+          <code>cargo clippy --all-targets -- -D warnings</code>, <code>59</code> tests across all
+          crates, and <code>RUSTDOCFLAGS="-D warnings" cargo doc</code>.
+        </li>
+      </ul>
+    </section>
+
+    <section id="citations" class="section">
+      <h2>Citations</h2>
+      <div class="copyable">
+        <span class="copy">
+          <button type="button" class="copy-button" command="--copy" commandfor="cmd-bibtex" aria-label="Copy BibTeX citations">
+            <span class="icon" aria-hidden="true"></span>
+          </button>
+          <span class="tip" role="status"></span>
+        </span>
+        <pre tabindex="0"><code id="cmd-bibtex">@inproceedings{lee2026littlebit2,
+  title={LittleBit-2: Maximizing the Spectral Energy Gain in Sub-1-Bit LLMs via Latent Geometry Alignment},
+  author={Lee, Banseok and Kim, Youngmin},
+  booktitle={Proceedings of the 43rd International Conference on Machine Learning},
+  year={2026}
+}
+
+@inproceedings{lee2025littlebit,
+  title={LittleBit: Ultra Low-Bit Quantization via Latent Factorization},
+  author={Lee, Banseok and Kim, Dongkyu and You, Youngcheon and Kim, Youngmin},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2025}
+}</code></pre>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <p>
+        Licensed under <a href="https://github.com/bhubbard/littlebit-rs/blob/main/LICENSE">CC BY-NC 4.0</a>,
+        matching upstream <code>SamsungLabs/LittleBit</code>.
+        See <a href="https://github.com/bhubbard/littlebit-rs/blob/main/NOTICE">NOTICE</a> for
+        third-party and community test-suite attributions.
+      </p>
+      <p class="muted">
+        Not affiliated with or endorsed by Samsung Research or the original LittleBit authors.
+      </p>
+    </div>
+  </footer>
+</body>
+</html>

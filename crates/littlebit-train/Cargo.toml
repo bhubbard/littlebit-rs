@@ -1,0 +1,39 @@
+[package]
+name = "littlebit-train"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Quantization-Aware Knowledge Distillation trainer, dataset tokenizer/caching, and perplexity/zero-shot evaluator for LittleBit"
+
+[features]
+default = []
+accelerate = ["littlebit-models/accelerate", "candle-core/accelerate", "candle-nn/accelerate"]
+metal = ["littlebit-models/metal", "candle-core/metal", "candle-nn/metal"]
+cuda = ["littlebit-models/cuda", "candle-core/cuda", "candle-nn/cuda"]
+
+[dependencies]
+littlebit-core.workspace = true
+littlebit-models.workspace = true
+candle-core.workspace = true
+candle-nn.workspace = true
+flate2.workspace = true
+hex.workspace = true
+hf-hub.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokenizers.workspace = true
+tracing.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

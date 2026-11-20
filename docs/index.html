@@ -274,15 +274,220 @@ cargo run --release -p littlebit-cli -- generate \
     </section>
 
     <section id="benchmarks" class="section">
-      <h2>Benchmarks</h2>
+      <h2>Benchmarks: Rust vs. Original Python / PyTorch</h2>
       <p>
-        Measured on an <strong>Apple M3 Pro</strong> (<code>arm64</code>, 11 CPU cores, 18 GiB RAM,
-        <code>rustc 1.100.0</code>, <code>--release</code>) using deterministic synthetic tensors.
-        See <a href="https://github.com/bhubbard/littlebit-rs/blob/main/BENCHMARKS.md">BENCHMARKS.md</a>
-        for full default CPU vs. Apple Accelerate tables and batched prefill (<code>b=16</code>) numbers.
+        Head-to-head measurements collected back-to-back on an <strong>Apple M3 Pro</strong>
+        (<code>arm64</code>, 11 CPU cores, 18 GiB RAM) comparing <strong>littlebit-rs</strong>
+        (<code>rustc 1.100.0</code>, <code>--release</code>) against unmodified upstream
+        <a href="https://github.com/SamsungLabs/LittleBit">SamsungLabs/LittleBit</a>
+        (commit <code>42d658b</code>, Python 3.15.2, PyTorch 2.15.0 CPU, 5 threads) using
+        identical seeded synthetic tensors. See
+        <a href="https://github.com/bhubbard/littlebit-rs/blob/main/BENCHMARKS.md">BENCHMARKS.md</a>
+        for full CPU default vs. Apple Accelerate tables and batched prefill (<code>b=16</code>) breakdowns.
       </p>
 
-      <h3>Reproduce Benchmark Suite</h3>
+      <h3>Deployment Footprint, Cold Startup &amp; Runtime Capabilities</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-vs-deploy-caption" class="table-wrapper">
+        <table class="bench-table-vs-deploy">
+          <caption id="bench-vs-deploy-caption">Standalone Rust Binary vs. Upstream Python / PyTorch Environment</caption>
+          <thead>
+            <tr>
+              <th scope="col">Metric / Capability</th>
+              <th scope="col"><code>littlebit-rs</code> (Rust)</th>
+              <th scope="col">Original Python (<code>42d658b</code>)</th>
+              <th scope="col">Comparison</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Install / Binary Size</th>
+              <td><strong>18.59 MiB</strong> (Accel) / 18.67 MiB (default)</td>
+              <td>766.79 MiB (<code>.venv</code> w/ <code>torch</code> only)</td>
+              <td><strong>41.2&times; smaller</strong> binary</td>
+            </tr>
+            <tr>
+              <th scope="row">Cold Startup (5-run median)</th>
+              <td><strong>9.80 ms</strong> (default) / <strong>10.32 ms</strong> (Accel)</td>
+              <td>3,854.33 ms (<code>import torch</code>)</td>
+              <td><strong>373&times;–393&times; faster</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">1-Bit Packed Runtime Matmul</th>
+              <td>Built-in (<code>PackedLittleBitLinear</code>)</td>
+              <td>None (unpacks to dense float RAM)</td>
+              <td>1-bit resident inference</td>
+            </tr>
+            <tr>
+              <th scope="row">FP16 Overflow &amp; Mixed-Bit Config</th>
+              <td>Issue #24 fix + <code>--eff-bit-layers</code></td>
+              <td>Open issue / requires patch</td>
+              <td>Integrated natively</td>
+            </tr>
+            <tr>
+              <th scope="row">Test Suite</th>
+              <td><strong>59 Rust tests</strong> (0 <code>unsafe</code>)</td>
+              <td>0 unit tests in repo</td>
+              <td>Full regression parity</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Packer &amp; Unpacker Speed: Rust vs. PyTorch</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-vs-pack-caption" class="table-wrapper">
+        <table class="bench-table-vs-pack">
+          <caption id="bench-vs-pack-caption">LSB-First <code>i8</code> &rarr; <code>i32</code> Binary Packing &amp; Unpacking (Apple M3 Pro)</caption>
+          <thead>
+            <tr>
+              <th scope="col">Shape</th>
+              <th scope="col">Packed Size</th>
+              <th scope="col">Rust Unpack (Accel)</th>
+              <th scope="col">PyTorch Unpack</th>
+              <th scope="col">Unpack Speedup</th>
+              <th scope="col">Rust Pack (Accel)</th>
+              <th scope="col">PyTorch Pack</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">1024 &times; 4096</th>
+              <td>0.50 MiB</td>
+              <td><strong>3.01 ms</strong> (1,394.3 MW/s)</td>
+              <td>14.47 ms (289.8 MW/s)</td>
+              <td><strong>4.81&times; faster</strong></td>
+              <td><strong>18.23 ms</strong></td>
+              <td>36.15 ms</td>
+            </tr>
+            <tr>
+              <th scope="row">4096 &times; 4096</th>
+              <td>2.00 MiB</td>
+              <td><strong>11.59 ms</strong> (1,447.1 MW/s)</td>
+              <td>203.77 ms (82.3 MW/s)</td>
+              <td><strong>17.58&times; faster</strong></td>
+              <td>72.17 ms</td>
+              <td><strong>58.01 ms</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">4096 &times; 11008</th>
+              <td>5.38 MiB</td>
+              <td><strong>35.61 ms</strong> (1,266.2 MW/s)</td>
+              <td>147.12 ms (306.5 MW/s)</td>
+              <td><strong>4.13&times; faster</strong></td>
+              <td>196.81 ms</td>
+              <td><strong>43.68 ms</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Resident Weight RAM &amp; Projection Decode: Rust 1-Bit vs. PyTorch <code>LittleBitLinear</code></h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-vs-proj-caption" class="table-wrapper">
+        <table class="bench-table-vs-proj">
+          <caption id="bench-vs-proj-caption">1-Bit Packed Resident Inference (Rust) vs. Unpacked Float Resident Inference (PyTorch)</caption>
+          <thead>
+            <tr>
+              <th scope="col">Projection</th>
+              <th scope="col">Rust 1-Bit RAM</th>
+              <th scope="col">PyTorch RAM (<code>F32</code> / <code>BF16</code>)</th>
+              <th scope="col">RAM Savings</th>
+              <th scope="col"><code>b=1</code> Rust Packed (Accel)</th>
+              <th scope="col"><code>b=1</code> PyTorch LB</th>
+              <th scope="col"><code>b=16</code> Packed vs PyTorch</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">4096&times;4096 @ 0.1 (single, s=184)</th>
+              <td><strong>222.2 KiB</strong></td>
+              <td>5.78 MiB / 2.89 MiB</td>
+              <td><strong>26.65&times;</strong> / 13.33&times;</td>
+              <td>0.35 ms</td>
+              <td><strong>0.06 ms</strong></td>
+              <td>7.02 ms vs <strong>1.69 ms</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">4096&times;4096 @ 0.5 (residual, s=488)</th>
+              <td><strong>1.05 MiB</strong></td>
+              <td>30.57 MiB / 15.28 MiB</td>
+              <td><strong>29.11&times;</strong> / 14.55&times;</td>
+              <td>1.42 ms</td>
+              <td><strong>0.88 ms</strong></td>
+              <td>25.75 ms vs <strong>5.68 ms</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">4096&times;4096 @ 1.0 (residual, s=1000)</th>
+              <td><strong>2.06 MiB</strong></td>
+              <td>62.58 MiB / 31.29 MiB</td>
+              <td><strong>30.35&times;</strong> / 15.17&times;</td>
+              <td>2.83 ms</td>
+              <td><strong>2.06 ms</strong></td>
+              <td>45.70 ms vs <strong>9.47 ms</strong></td>
+            </tr>
+            <tr>
+              <th scope="row">4096&times;11008 @ 0.5 (residual, s=728)</th>
+              <td><strong>2.77 MiB</strong></td>
+              <td>84.02 MiB / 42.01 MiB</td>
+              <td><strong>30.28&times;</strong> / 15.14&times;</td>
+              <td>4.74 ms</td>
+              <td><strong>3.36 ms</strong></td>
+              <td>56.82 ms vs <strong>12.51 ms</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>SVD &amp; Joint-ITQ Initialization: Rust (<code>faer</code>) vs. PyTorch</h3>
+      <div tabindex="0" role="region" aria-labelledby="bench-vs-init-caption" class="table-wrapper">
+        <table class="bench-table-vs-init">
+          <caption id="bench-vs-init-caption">Zero-Shot Factorization Speed &amp; Relative Frobenius Error (<code>eff_bit = 0.5</code>, Residual)</caption>
+          <thead>
+            <tr>
+              <th scope="col">Shape &amp; Method</th>
+              <th scope="col"><code>split_dim</code></th>
+              <th scope="col">Rust Init (Accel)</th>
+              <th scope="col">PyTorch Init</th>
+              <th scope="col">Rust Rel. Error</th>
+              <th scope="col">PyTorch Rel. Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">1024&times;1024 SVD-only</th>
+              <td>104</td>
+              <td>107.70 ms</td>
+              <td><strong>86.51 ms</strong></td>
+              <td><strong>0.88363</strong></td>
+              <td>0.88563</td>
+            </tr>
+            <tr>
+              <th scope="row">1024&times;1024 Joint-ITQ (20 iters)</th>
+              <td>104</td>
+              <td>226.42 ms</td>
+              <td><strong>126.62 ms</strong></td>
+              <td><strong>0.86192</strong></td>
+              <td>0.86314</td>
+            </tr>
+            <tr>
+              <th scope="row">2048&times;2048 SVD-only</th>
+              <td>232</td>
+              <td>557.67 ms</td>
+              <td><strong>293.77 ms</strong></td>
+              <td><strong>0.87422</strong></td>
+              <td>0.87471</td>
+            </tr>
+            <tr>
+              <th scope="row">2048&times;2048 Joint-ITQ (20 iters)</th>
+              <td>232</td>
+              <td>1,093.93 ms</td>
+              <td><strong>700.80 ms</strong></td>
+              <td><strong>0.84829</strong></td>
+              <td>0.84890</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Reproduce Rust Benchmark Suite</h3>
       <div class="copyable">
         <span class="copy">
           <button type="button" class="copy-button" command="--copy" commandfor="cmd-bench" aria-label="Copy benchmark commands">
@@ -297,10 +502,10 @@ cargo run --release -p littlebit-cli --example bench
 cargo run --release -p littlebit-cli --features accelerate --example bench</code></pre>
       </div>
 
-      <h3>Projection Decode Latency &amp; Compression (<code>batch = 1</code>)</h3>
+      <h3>Rust Projection Modes: Dense vs. Unpacked vs. 1-Bit Packed (<code>batch = 1</code>)</h3>
       <div tabindex="0" role="region" aria-labelledby="bench-proj-caption" class="table-wrapper">
         <table class="bench-table-proj">
-          <caption id="bench-proj-caption">LittleBitLinear 1-Token Decode &amp; Footprint (Apple M3 Pro)</caption>
+          <caption id="bench-proj-caption"><code>littlebit-rs</code> 1-Token Decode &amp; Footprint (Apple M3 Pro)</caption>
           <thead>
             <tr>
               <th scope="col">Projection</th>
@@ -318,130 +523,36 @@ cargo run --release -p littlebit-cli --features accelerate --example bench</code
               <td><code>0.098</code></td>
               <td>222.2 KiB</td>
               <td>147.50&times;</td>
-              <td>1.57 ms</td>
-              <td>4.56 ms</td>
-              <td><strong>0.27 ms</strong></td>
+              <td>1.66 ms</td>
+              <td>4.69 ms</td>
+              <td><strong>0.35 ms</strong></td>
             </tr>
             <tr>
               <th scope="row">Llama-7B Attn 4096&times;4096 (residual)</th>
               <td><code>0.493</code></td>
               <td>1.05 MiB</td>
               <td>30.47&times;</td>
-              <td>1.16 ms</td>
-              <td>24.85 ms</td>
-              <td><strong>1.30 ms</strong></td>
+              <td>1.09 ms</td>
+              <td>25.67 ms</td>
+              <td><strong>1.42 ms</strong></td>
             </tr>
             <tr>
               <th scope="row">Llama-7B Attn 4096&times;4096 (residual)</th>
               <td><code>0.994</code></td>
               <td>2.06 MiB</td>
               <td>15.52&times;</td>
-              <td>1.58 ms</td>
-              <td>52.01 ms</td>
-              <td><strong>2.51 ms</strong></td>
+              <td>1.36 ms</td>
+              <td>54.69 ms</td>
+              <td><strong>2.83 ms</strong></td>
             </tr>
             <tr>
               <th scope="row">Llama-7B MLP 4096&times;11008 (residual)</th>
               <td><code>0.499</code></td>
               <td>2.77 MiB</td>
               <td>31.00&times;</td>
-              <td>4.29 ms</td>
-              <td>68.04 ms</td>
-              <td><strong>2.77 ms</strong></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <h3>Binary Packer &amp; Unpacker Throughput (CPU Default)</h3>
-      <div tabindex="0" role="region" aria-labelledby="bench-packer-caption" class="table-wrapper">
-        <table class="bench-table-packer">
-          <caption id="bench-packer-caption">LSB-First 32-Bit <code>pack_i8_slice</code> &amp; <code>unpack_to_i8</code></caption>
-          <thead>
-            <tr>
-              <th scope="col">Shape</th>
-              <th scope="col">Packed Size</th>
-              <th scope="col">Pack (ms)</th>
-              <th scope="col">Pack Speed</th>
-              <th scope="col">Unpack (ms)</th>
-              <th scope="col">Unpack Speed</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <th scope="row">1024 &times; 4096</th>
-              <td>0.50 MiB</td>
-              <td>18.03 ms</td>
-              <td>232.7 MW/s</td>
-              <td>2.69 ms</td>
-              <td>1,559.1 MW/s</td>
-            </tr>
-            <tr>
-              <th scope="row">4096 &times; 4096</th>
-              <td>2.00 MiB</td>
-              <td>72.87 ms</td>
-              <td>230.2 MW/s</td>
-              <td>11.18 ms</td>
-              <td>1,500.6 MW/s</td>
-            </tr>
-            <tr>
-              <th scope="row">4096 &times; 11008</th>
-              <td>5.38 MiB</td>
-              <td>196.00 ms</td>
-              <td>230.0 MW/s</td>
-              <td>29.82 ms</td>
-              <td>1,512.1 MW/s</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <h3>Joint-ITQ Initialization &amp; Reconstruction Error (<code>eff_bit = 0.5</code>)</h3>
-      <div tabindex="0" role="region" aria-labelledby="bench-init-caption" class="table-wrapper">
-        <table class="bench-table-init">
-          <caption id="bench-init-caption">SVD-Only vs. 20-Iter Joint-ITQ Relative Frobenius Error</caption>
-          <thead>
-            <tr>
-              <th scope="col">Shape</th>
-              <th scope="col">Method</th>
-              <th scope="col"><code>split_dim</code></th>
-              <th scope="col">Init Time (Default)</th>
-              <th scope="col">Init Time (Accel)</th>
-              <th scope="col">Rel. Frob. Error</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <th scope="row">1024 &times; 1024</th>
-              <td>SVD-only</td>
-              <td>104</td>
-              <td>92.46 ms</td>
-              <td>95.51 ms</td>
-              <td>0.88363</td>
-            </tr>
-            <tr>
-              <th scope="row">1024 &times; 1024</th>
-              <td><strong>Joint-ITQ (20 iters)</strong></td>
-              <td>104</td>
-              <td>201.67 ms</td>
-              <td>222.82 ms</td>
-              <td><strong>0.86192</strong></td>
-            </tr>
-            <tr>
-              <th scope="row">2048 &times; 2048</th>
-              <td>SVD-only</td>
-              <td>232</td>
-              <td>454.61 ms</td>
-              <td>517.75 ms</td>
-              <td>0.87422</td>
-            </tr>
-            <tr>
-              <th scope="row">2048 &times; 2048</th>
-              <td><strong>Joint-ITQ (20 iters)</strong></td>
-              <td>232</td>
-              <td>949.41 ms</td>
-              <td>983.07 ms</td>
-              <td><strong>0.84829</strong></td>
+              <td>3.64 ms</td>
+              <td>73.65 ms</td>
+              <td><strong>4.74 ms</strong></td>
             </tr>
           </tbody>
         </table>
@@ -466,17 +577,17 @@ cargo run --release -p littlebit-cli --features accelerate --example bench</code
               <th scope="row">Llama-4L (h=512, i=1376, v=4096)</th>
               <td>0.76 MiB</td>
               <td>29.19&times;</td>
-              <td>23.9 tok/s</td>
-              <td>51.3 tok/s</td>
-              <td><strong>69.4 tok/s</strong></td>
+              <td>23.3 tok/s</td>
+              <td>48.3 tok/s</td>
+              <td><strong>51.6 tok/s</strong> (58.1 CPU default)</td>
             </tr>
             <tr>
               <th scope="row">Qwen3-4L (h=512, i=1376, v=4096)</th>
               <td>0.76 MiB</td>
               <td>29.19&times;</td>
-              <td>23.7 tok/s</td>
-              <td>50.6 tok/s</td>
-              <td><strong>67.0 tok/s</strong></td>
+              <td>21.8 tok/s</td>
+              <td>50.2 tok/s</td>
+              <td><strong>58.0 tok/s</strong></td>
             </tr>
           </tbody>
         </table>

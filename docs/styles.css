@@ -321,6 +321,42 @@ table {
   --label-3: "Notable Support";
 }
 
+.bench-table-vs-deploy {
+  --label-1: "Metric / Capability";
+  --label-2: "littlebit-rs (Rust)";
+  --label-3: "Original Python (42d658b)";
+  --label-4: "Comparison";
+}
+
+.bench-table-vs-pack {
+  --label-1: "Shape";
+  --label-2: "Packed Size";
+  --label-3: "Rust Unpack (Accel)";
+  --label-4: "PyTorch Unpack";
+  --label-5: "Unpack Speedup";
+  --label-6: "Rust Pack (Accel)";
+  --label-7: "PyTorch Pack";
+}
+
+.bench-table-vs-proj {
+  --label-1: "Projection";
+  --label-2: "Rust 1-Bit RAM";
+  --label-3: "PyTorch RAM (F32 / BF16)";
+  --label-4: "RAM Savings";
+  --label-5: "b=1 Rust Packed (Accel)";
+  --label-6: "b=1 PyTorch LB";
+  --label-7: "b=16 Packed vs PyTorch";
+}
+
+.bench-table-vs-init {
+  --label-1: "Shape & Method";
+  --label-2: "split_dim";
+  --label-3: "Rust Init (Accel)";
+  --label-4: "PyTorch Init";
+  --label-5: "Rust Rel. Frob. Error";
+  --label-6: "PyTorch Rel. Frob. Error";
+}
+
 .bench-table-proj {
   --label-1: "Projection";
   --label-2: "eff_bit";

@@ -157,7 +157,7 @@ cargo run --release -p littlebit-cli --example bench
 cargo run --release -p littlebit-cli --features accelerate --example bench
 ```
 
-See [BENCHMARKS.md](BENCHMARKS.md) for measured results on Apple M3 Pro (`29.19×`–`147.50×` compression vs. FP16, `0.27 ms`–`2.77 ms` 1-bit decode projections, and up to `69.4 tok/s` packed 4-layer generation).
+See [BENCHMARKS.md](BENCHMARKS.md) and the [GitHub Pages benchmark tables](https://code.brandonhubbard.com/littlebit-rs/#benchmarks) for same-machine **Apple M3 Pro** head-to-head results comparing `littlebit-rs` against upstream `SamsungLabs/LittleBit` (`42d658b`, Python 3.15.2 / PyTorch 2.15.0): `41.2×` smaller deployment footprint (`18.59 MiB` vs. `766.79 MiB`), `373×`–`393×` faster cold startup (`9.80 ms` vs. `3,854.33 ms`), `4.1×`–`17.6×` faster binary unpacking, and `26.7×`–`30.3×` lower resident 1-bit weight RAM (plus `51.6`–`58.1 tok/s` packed 4-layer KV-cached decode).
 
 ---
 

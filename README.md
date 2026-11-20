@@ -1,16 +1,36 @@
 # littlebit-rs
 
-Pure-Rust port of **[SamsungLabs/LittleBit](https://github.com/SamsungLabs/LittleBit)** — implementing **LittleBit** (NeurIPS 2025) and **LittleBit-2 Joint-ITQ** (ICML 2026) for sub-1-bit LLM compression, Quantization-Aware Knowledge Distillation (QAT), bit-packed safetensors persistence, and compact 1-bit inference.
+Shrink large open-source AI models down to less than 1 bit per weight so they fit in a fraction of the RAM and run offline on an everyday laptop — packaged as a single pure-Rust binary with zero Python or PyTorch dependencies. Based on Samsung Research's **[LittleBit](https://github.com/SamsungLabs/LittleBit)** (NeurIPS 2025) and **LittleBit-2** (ICML 2026).
 
-**Documentation & Rustdoc API:** [https://bhubbard.github.io/littlebit-rs/](https://bhubbard.github.io/littlebit-rs/) &middot; **Benchmarks:** [BENCHMARKS.md](BENCHMARKS.md)
+**Documentation & Rustdoc API:** [https://code.brandonhubbard.com/littlebit-rs/](https://code.brandonhubbard.com/littlebit-rs/) &middot; **Benchmarks:** [BENCHMARKS.md](BENCHMARKS.md)
 
 ---
 
 ## Overview
 
-**LittleBit** compresses large language models into the sub-1-bit regime (down to `0.1` bits per weight) by factorizing each dense projection matrix $W \in \mathbb{R}^{b \times a}$ into low-rank latent factors $U \in \mathbb{R}^{b \times s}, V \in \mathbb{R}^{s \times a}$, binarizing those factors (`STEBinary` or `SmoothSign`), and restoring magnitude via rank-1 scale vectors $(u_1, u_2, v_1, v_2)$ (plus an optional dual residual factorization branch $(U_R, V_R, \dots)$).
+Standard 16-bit open models are huge: a 7B model needs ~14 GB of memory, and 26B–31B models need 50–60+ GB before you can even load them. **littlebit-rs** compresses those models into tiny 1-bit patterns paired with lightweight scale factors (down to **0.1–1.0 bits per weight**), and executes directly on compact packed weights (`i32` bitfields) instead of inflating everything back to full precision in memory.
 
-**LittleBit-2** aligns the SVD-derived latent factors with the binary hypercube via **Internal Latent Rotation with Joint Iterative Quantization (Joint-ITQ)** (`--use-itq`), minimizing $\| \text{sign}(X R) - X R \|_F^2$ over $X = [U; V^\top]$ with zero extra inference overhead.
+- **Fits Big Models on Normal Hardware:** Cut resident weight memory dramatically (`26×–30×` lower resident RAM in our packed benchmarks vs. stock PyTorch unpacking) and start up in ~10 ms.
+- **Better Accuracy at Extreme Compression (`--use-itq`):** Optionally enables LittleBit-2's rotation step during compression to better preserve model quality with zero runtime overhead, plus optional Knowledge Distillation fine-tuning (`train`).
+- **Stream Giant Checkpoints Without High RAM (`--streaming`):** Quantize massive checkpoints (such as Gemma 4 26B MoE or 31B Dense) one transformer block or expert at a time directly from disk into sharded safetensors—without needing a 64 GB+ cloud machine.
+- **Compatible with Python Checkpoints:** Reads and writes the exact same packed `.safetensors` format as `SamsungLabs/LittleBit`.
+
+<details>
+<summary>Technical details: How LittleBit &amp; LittleBit-2 work under the hood</summary>
+
+Each dense projection matrix $W \in \mathbb{R}^{b \times a}$ is factorized into low-rank latent factors $U \in \mathbb{R}^{b \times s}$ and $V \in \mathbb{R}^{s \times a}$, binarized (`STEBinary` or `SmoothSign`), and rescaled using rank-1 scale vectors $(u_1, u_2, v_1, v_2)$ (plus an optional dual residual branch $(U_R, V_R, \dots)$). LittleBit-2 **Joint-ITQ** aligns the SVD factors to the binary hypercube by minimizing $\| \text{sign}(X R) - X R \|_F^2$ over $X = [U; V^\top]$ with no extra runtime parameters.
+
+</details>
+
+---
+
+## Example Use Cases
+
+- **Run large open models on an everyday laptop:** Compress 7B–31B models (Llama 3, Qwen3, Phi-4, Gemma 4) to fit comfortably alongside normal desktop apps on CPU or Apple Silicon (`--features accelerate`).
+- **Private local classification, triage & routing:** Score, tag, or route emails, support tickets, or legal intake forms completely offline with `$0` API costs—especially effective for single-pass next-token logit scoring (choosing between discrete labels `"A"` / `"B"` / `"C"` without multi-token generation drift).
+- **Offline micro-agents & speculative draft models:** Run short, structured extraction or agent tasks locally, or pair a fast 0.5–1.0 bpw compressed checkpoint as a draft model in a local serving stack.
+- **Compress huge Hugging Face checkpoints without renting a big GPU box:** Use `--streaming --text-only` to quantize multi-shard 26B–31B models block-by-block on an 18 GB laptop and emit sharded output files ready for Hub upload or local execution.
+- **Embed LLM inference cleanly in Rust applications:** Drop `littlebit-core` / `littlebit-models` directly into Rust CLIs, local voice pipelines, desktop apps, or proxies without bundling Python, conda, or PyTorch.
 
 ---
 
@@ -18,10 +38,10 @@ Pure-Rust port of **[SamsungLabs/LittleBit](https://github.com/SamsungLabs/Littl
 
 | Crate | Purpose |
 | :--- | :--- |
-| `littlebit-core` | `STEBinary` & `SmoothSign` autograd ops, LSB-first 32-bit `binary_packer` / `binary_unpacker`, compact `PackedBinaryMatrix` matmul, `faer`-backed thin & randomized low-rank SVD, LittleBit-2 Joint-ITQ rotation, `LittleBitLinear` / `PackedLittleBitLinear`, safetensors & header-only checkpoint inspection |
-| `littlebit-models` | Differentiable decoders for OPT, Llama/Llama 2/3, Phi-3/4 (`PhiQKVSplitAttention`), Qwen2.5/QwQ, Gemma 2/3, and Qwen3; dynamic `apply_littlebit_patch` (`kv_factor`, `lm_head` exclusion); KV-cached generation; Hugging Face Hub `from_pretrained` & `push_to_hub` |
+| `littlebit-core` | `STEBinary` & `SmoothSign` autograd ops, LSB-first 32-bit `binary_packer` / `binary_unpacker`, compact `PackedBinaryMatrix` matmul, `faer`-backed thin & randomized low-rank SVD, LittleBit-2 Joint-ITQ rotation, `LittleBitLinear` / `PackedLittleBitLinear`, streaming `SafetensorsReader` / `ShardedSafetensorsWriter`, and header-only checkpoint inspection |
+| `littlebit-models` | Differentiable decoders for OPT, Llama/Llama 2/3, Phi-3/4 (`PhiQKVSplitAttention`), Qwen2.5/QwQ, Qwen3, Gemma 2/3, and Gemma 4 Dense & MoE (p-RoPE, `k_eq_v`, sparse expert dispatch); streaming layer-by-layer quantizer; dynamic `apply_littlebit_patch` (`kv_factor`, `lm_head`/`router` exclusion); KV-cached generation; Hugging Face Hub `from_pretrained` & `push_to_hub` |
 | `littlebit-train` | Knowledge Distillation trainer (`KdTrainer`: KL-divergence logit loss + scaled layer-to-layer hidden-state MSE), cosine-warmup scheduler, token-block dataset caching (SHA-256[:7]), perplexity & zero-shot multiple-choice evaluation, DeepSpeed `configs/zero*.json` parser |
-| `littlebit-cli` | Unified `littlebit` binary: `quantize`, `train`, `eval`, `generate`, `inspect`, `pack`, `unpack`, and `push` |
+| `littlebit-cli` | Unified `littlebit` binary: `quantize` (with `--streaming`), `train`, `eval`, `generate`, `inspect`, `pack`, `unpack`, and `push` |
 
 ---
 
@@ -32,6 +52,7 @@ Pure-Rust port of **[SamsungLabs/LittleBit](https://github.com/SamsungLabs/Littl
 - **Qwen3** (`model_type = "qwen3"`, with per-head `q_norm` / `k_norm`)
 - **Phi-3 / Phi-4** (`model_type = "phi3"`, splitting fused `qkv_proj` via `PhiQKVSplitAttention` before applying `kv_factor`)
 - **Gemma 2 / Gemma 3** (`model_type = "gemma2"`, `"gemma3"`, `"gemma3_text"`)
+- **Gemma 4 Dense & MoE** (`model_type = "gemma4"`, `"gemma4_text"` — hybrid sliding/full attention, proportional RoPE, `attention_k_eq_v`, shared MLP + unquantized top-k router with 1-bit packed experts; 26B-A4B / 31B text backbones)
 - **Meta OPT** (`model_type = "opt"`)
 
 ---
@@ -74,6 +95,21 @@ cargo run --release -p littlebit-cli -- quantize \
     --min-split-dim 8 \
     --use-itq True \
     --itq-n-iter 50
+```
+
+For larger checkpoints on a memory-constrained laptop (e.g., Gemma 4 26B MoE or 31B Dense), stream one block at a time directly from safetensors shards and optionally drop vision/audio towers with `--text-only`:
+
+```bash
+cargo run --release --features accelerate -p littlebit-cli -- quantize \
+    --model-id google/gemma-4-26B-A4B-it \
+    --save-dir ./outputs/Gemma-4-26B-LittleBit-2 \
+    --streaming \
+    --text-only \
+    --max-shard-mb 2048 \
+    --eff-bit 1.5 \
+    --residual True \
+    --use-itq True \
+    --itq-n-iter 15
 ```
 
 ### 2. QAT + Knowledge Distillation (`train`)
@@ -144,7 +180,7 @@ littlebit push --model-dir ./outputs/Llama-2-7b-LittleBit-2 \
 - **Config Loading Priority**: Resolves parameters in upstream order: explicit CLI overrides > `littlebit_config.json` > `config.json` fallback > defaults.
 - **Single-Node Training**: `littlebit train` executes single-process QAT + KD using Candle autograd (`rms_norm_slow`, `layer_norm_slow`, `rope_slow`, and custom `STEBinary` / `SmoothSign` backward ops) and parses `configs/zero*.json` for scheduler/clipping/gradient-accumulation hyperparameters without multi-node MPI/DeepSpeed dependency.
 - **Zero-Shot Evaluation**: Implements native conditional log-likelihood and byte-normalized `acc_norm` scoring over JSONL multiple-choice benchmarks (`context`, `choices`, `gold_index`) without shelling out to Python `lm-eval`.
-- **Mixed-Bit Overrides & Verification**: Supports per-block `--eff-bit-layers` bit-budget overrides and includes a 59-test Rust verification suite covering upstream issue regressions (Issue #21 bit unpacking and Issue #24 FP16 matmul overflow guard) alongside community audit and benchmark checks.
+- **Mixed-Bit Overrides & Verification**: Supports per-block `--eff-bit-layers` bit-budget overrides and includes a 69-test Rust verification suite covering upstream issue regressions (Issue #21 bit unpacking and Issue #24 FP16 matmul overflow guard) alongside Gemma 4 Dense/MoE, streaming sharded quantization, and community audit checks.
 
 ---
 
